@@ -1,0 +1,20 @@
+version: "3.9"
+
+services:
+  app:
+    restart: always
+    networks:
+      - proxy-net
+      - app-net
+    environment:
+      - VIRTUAL_HOST=bmsapi.maktg.com
+      - VIRTUAL_PORT=7200
+      - LETSENCRYPT_HOST=bmsapi.maktg.com
+      - LETSENCRYPT_EMAIL=contact@maktg.com
+
+  mongo:
+    restart: always
+
+networks:
+  proxy-net:
+    external: true

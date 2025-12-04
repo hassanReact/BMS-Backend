@@ -1,0 +1,3 @@
+#!/bin/bash
+set -e
+git fetch && git merge --no-ff --no-commit origin/$1

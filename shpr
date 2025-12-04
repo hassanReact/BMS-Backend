@@ -1,0 +1,77 @@
+#!/bin/bash
+
+PROJECT_ROOT="$(dirname "$0")"
+
+# Function to get the current git branch
+get_current_branch() {
+  git rev-parse --abbrev-ref HEAD
+}
+
+# Parse named arguments (e.g., --title="PR Title")
+for arg in "$@"; do
+  case $arg in
+    --title=*)
+      PR_TITLE="${arg#*=}"
+      shift # Remove argument from processing
+      ;;
+    *)
+      POSITIONAL_ARGS+=("$arg")
+      ;;
+  esac
+done
+
+set -- "${POSITIONAL_ARGS[@]}" # Restore positional arguments
+
+if [ "$#" -lt 1 ]; then
+  echo "Usage: ./shpr <target_branch> [source_branch] [--title=\"PR Title\"]"
+  exit 1
+fi
+
+# Import BitBucket Credentials
+source $PROJECT_ROOT/shbbcreds
+
+# Configuration
+TARGET_BRANCH=$1
+SOURCE_BRANCH=${2:-$(get_current_branch)}
+PR_TITLE=${PR_TITLE:-"Merging $SOURCE_BRANCH into $TARGET_BRANCH by $BB_USERNAME from $USER"}
+PR_DESCRIPTION="PR created via ./sh.bbpr"
+
+echo
+echo "Pushing $SOURCE_BRANCH..."
+git push origin "$SOURCE_BRANCH"
+
+# Create pull request
+RESPONSE=$(curl -s -u "$BB_USERNAME:$BB_APPPASS" \
+  -X POST "https://api.bitbucket.org/2.0/repositories/$REPO_OWNER/$REPO_SLUG/pullrequests" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "title": "'"${PR_TITLE}"'",
+        "source": {
+          "branch": {
+            "name": "'"${SOURCE_BRANCH}"'"
+          }
+        },
+        "destination": {
+          "branch": {
+            "name": "'"${TARGET_BRANCH}"'"
+          }
+        },
+        "description": "'"${PR_DESCRIPTION}"'"
+      }')
+
+# Check for errors
+ERRORS=$(echo "$RESPONSE" | jq '.error.message')
+
+if [ "$ERRORS" != "null" ]; then
+  echo
+  echo "Error creating pull request: $ERRORS"
+  exit 1
+fi
+
+PR_NUMBER=$(echo "$RESPONSE" | jq '.id')
+PR_URL=$(echo "$RESPONSE" | jq -r '.links.html.href')
+
+echo
+echo "Done."
+echo "Created PR #$PR_NUMBER"
+echo "PR URL: $PR_URL"

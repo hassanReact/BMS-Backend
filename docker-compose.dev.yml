@@ -1,0 +1,11 @@
+version: "3.9"
+
+services:
+  app:
+    command: npm run dev # override CMD from Dockerfile
+    ports:
+      - "${PORT:-7200}:7200"
+
+  mongo:
+    ports:
+      - "27017:27017"

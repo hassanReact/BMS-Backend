@@ -1,0 +1,11 @@
+#!/bin/bash
+
+CONTAINERS=$(docker ps -q)
+if [ -n "$CONTAINERS" ]; then
+  echo "Stopping..."
+  docker stop $CONTAINERS
+fi
+echo
+
+# Overriding dev yml
+docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
