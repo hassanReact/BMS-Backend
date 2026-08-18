@@ -466,7 +466,7 @@ export const changestatus = async (req, res) => {
 };
 
 export const updateMailStatus = async (req, res) => {
-  const companyId = req.body.id;
+  const companyId = req.body.id || req.body.companyId;
 
   const company = await Company.findById(companyId);
 
@@ -486,7 +486,7 @@ export const updateMailStatus = async (req, res) => {
 };
 
 export const updateWhataapStatus = async (req, res) => {
-  const companyId = req.body.id;
+  const companyId = req.body.id || req.body.companyId;
 
   const company = await Company.findById(companyId);
 

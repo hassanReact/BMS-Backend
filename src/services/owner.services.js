@@ -99,7 +99,7 @@ export const getAllOwnerProperties = async (req, res) => {
   return properties;
 };
 
-export const getOwnerPropertyByIdd = async (req, res) => {
+export const getOwnerPropertyById = async (req, res) => {
   const { ownerId, propertyId } = req.query;
 
   if (!ownerId || !propertyId) {

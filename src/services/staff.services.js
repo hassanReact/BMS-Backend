@@ -42,10 +42,10 @@ export const createStaff = async (req, res) => {
   const CompanyDetails = await Company.findById(companyId);
 
   if (CompanyDetails.isMailStatus) {
-    await sendStaffRegistrationEmail(newstaff, CompanyDetails);
+    await sendStaffRegistrationEmail(newStaff, CompanyDetails);
   }
   if (CompanyDetails.whatappStatus) {
-    await sendWhatsAppMessage(newstaff, CompanyDetails);
+    await sendWhatsAppMessage(newStaff, CompanyDetails);
   }
 
   return newStaff
@@ -149,12 +149,14 @@ const generateAccessAndRefreshTokens = async (userId) => {
   }
 };
 
+
+//contain errors
 export const loginStaff = async (req, res) => {
   const { email, password } = req.body;
 
-  const staff = await staff.findOne({ email });
+  const staffUser = await staff.findOne({ email });
 
-  if (!staff) {
+  if (!staffUser) {
     throw new CustomError(
       statusCodes?.notFound,
       Message?.notFound,
@@ -162,7 +164,7 @@ export const loginStaff = async (req, res) => {
     );
   }
 
-  const passwordVerify = await staff.isPasswordCorrect(password);
+  const passwordVerify = await staffUser.isPasswordCorrect(password);
 
   if (!passwordVerify) {
     throw new CustomError(
@@ -173,10 +175,10 @@ export const loginStaff = async (req, res) => {
   }
 
   const { accessToken, refreshToken } = await generateAccessAndRefreshTokens(
-    staff._id
+    staffUser._id
   );
 
-  const loginstaff = await staff.findById(staff._id).select(
+  const loginstaff = await staff.findById(staffUser._id).select(
     "-password -refreshToken"
   );
 
@@ -221,6 +223,19 @@ export const getAllStaff = async (req) => {
       errorCodes.missing_id
     );
   }
+
+  const company = await Company.findById(companyId);
+
+  if(!company || company.isDeleted){
+     
+    throw new CustomError(
+       statusCodes.notFound,
+      Message.notFound,
+      errorCodes.not_found
+    );
+    }
+
+
   const allstaff = await staff.find({
     companyId: companyId,
     isDeleted: false,
@@ -256,9 +271,9 @@ export const deleteStaff = async (req, res) => {
 
 export const getStaffById = async (req, res) => {
   const staffId = req.query.id;
-  const staff = await staff.findById(staffId);
+  const Staff = await staff.findById(staffId);
 
-  if (!staff) {
+  if (!Staff) {
     throw new CustomError(
       statusCodes?.notFound,
       Message?.notFound,
@@ -280,7 +295,7 @@ export const getStaffById = async (req, res) => {
   const tenant = await Tenant.find({ reporterId: staffId });
 
   return {
-    staff,
+    Staff,
     bookings,
     // booking: formattedBookings,
     tenant,

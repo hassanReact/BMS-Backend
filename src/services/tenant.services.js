@@ -11,7 +11,7 @@ import bcrypt from 'bcrypt';
 import sendWhatsApp from "../core/helpers/twillio.js"
 import Property from "../models/property.model.js";
 
-export const createTenant = async (req) => {
+export const createTenant = async (req) => {   
   const {
     tenantName,
     email,
@@ -370,7 +370,7 @@ export const getTenantsById = async (req, res, next) => {
       errorCodes?.invalid_request
     );
   }
-  const tenant = await Tenant.findById(id);
+  const tenant = await Tenant.findOne({_id:id, isDeleted: false});
 
   if (!tenant) {
     throw new CustomError(
@@ -380,7 +380,7 @@ export const getTenantsById = async (req, res, next) => {
     );
   }
 
-  const bookings = await Booking.find({ tenantId: id }).populate("propertyId");
+  const bookings = await Booking.find({ tenantId: id , isDeleted: false }).populate("propertyId");
 
   const formattedBookings = bookings.map((bookingData) => ({
     propertyName: bookingData.propertyId?.propertyname,
@@ -434,6 +434,8 @@ export const getAllTenants = async (req, res, next) => {
 
 export const getAllDocs = async (req, res, next) => {
   const { id: tenantId } = req.query;
+
+  console.log(tenantId);
 
   const tenantsDocs = await TenantDocs.find({
     tenantId,
@@ -499,6 +501,14 @@ export const getMyTenants = async (req, res) => {
       if (creater) {
         Creater = creater.companyName;
       }
+    }
+
+    if(!Creater){
+      throw new CustomError(
+        statusCodes?.notFound,
+        "No matching active Agent or Company found for this reporter ID",
+        errorCodes?.not_found
+      )
     }
     finalResponse.push({ Creater, ...tenat });
   }

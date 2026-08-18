@@ -10,6 +10,20 @@ export const registerVendor = async (req, res) => {
         return res.status(400).json({ message: "All fields are required" });
     }
 
+     // Check whether this vendor already exists for this company
+    const isVendorAlreadyExist = await Vendor.findOne({
+        companyId: companyId,
+        vendorEmail: vendorEmail
+    });
+
+    if (isVendorAlreadyExist) {
+        throw new CustomError(
+            statusCodes?.conflict,
+            Message?.alreadyExist,
+            errorCodes?.already_exist
+        );
+    }
+
     const registerVendor = await Vendor.create({
         companyId,
         vendorName,
@@ -26,7 +40,7 @@ export const registerVendor = async (req, res) => {
             errorCodes?.already_exist
         );
     }
-    
+
     return registerVendor
 
 };
