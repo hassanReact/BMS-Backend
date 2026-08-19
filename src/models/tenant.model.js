@@ -4,13 +4,18 @@ import jwt from "jsonwebtoken";
 
 const tenantSchema = new Schema(
   {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
     tenantName: {
       type: String
     },
     email: {
       type: String
     },
-    password:{
+    password: {
       type: String
     },
     phoneno: {
@@ -27,23 +32,23 @@ const tenantSchema = new Schema(
     // },
     files: [
       {
-        name:{type: String},
+        name: { type: String },
         filetype: { type: String },
-        url: { type: String}
+        url: { type: String }
       },
     ],
-    address:{
+    address: {
       type: String
     },
     role: {
       type: String,
-      default:"tenant"
+      default: "tenant"
     },
-    status:{
+    status: {
       type: Boolean,
       default: true
     },
-    isDeleted:{
+    isDeleted: {
       type: Boolean,
       default: false
     },
@@ -54,14 +59,14 @@ const tenantSchema = new Schema(
     // accountName: {
     //   type: String
     // },
-    companyId:{
+    companyId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Company"
-    },  
-    reporterId:{
+    },
+    reporterId: {
       type: mongoose.Schema.Types.ObjectId
     },
-  
+
   },
   { timestamps: true },
 );
@@ -83,7 +88,7 @@ tenantSchema.methods.generateAccessToken = function () {
     role: this.role,
     companyId: this.companyId,
     name: this.tenantName,
-    reporterId :this.reporterId
+    reporterId: this.reporterId
   };
 
   const token = jwt.sign(payload, process.env.ACCESS_TOKEN_SECRET, {
@@ -99,7 +104,7 @@ tenantSchema.methods.generateRefreshToken = function () {
     role: this.role,
     companyId: this.companyId,
     name: this.tenantName,
-    reporterId :this.reporterId
+    reporterId: this.reporterId
   };
 
   return jwt.sign(payload, process.env.REFRESH_TOKEN_SECRET, {
