@@ -4,6 +4,11 @@ import jwt from "jsonwebtoken";
 
 const staffSchema = new Schema(
   {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
     staffName: {
       type: String,
     },

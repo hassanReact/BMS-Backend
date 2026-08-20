@@ -7,49 +7,190 @@ import { sendEmail } from "../core/helpers/mail.js";
 import bcrypt from 'bcrypt';
 import staff from "../models/staff.model.js";
 import Complaint from "../models/complaints.model.js";
+import mongoose from "mongoose";
+import User from "../models/user.model.js";
+import Role from "../models/role.model.js";
+import UserRole from "../models/userRole.model.js";
 
-export const createStaff = async (req, res) => {
-  const { staffName, email, password, phoneNo, address, companyId, designation, salary, cnic } = req.body;
+// export const createStaff = async (req, res) => {
+//   const { staffName, email, password, phoneNo, address, companyId, designation, salary, cnic } = req.body;
 
-  const [isCompanyAlreadyExist, isstaffAlreadyExist, isStudentAlreadyExist] =
-    await Promise.all([
-      Company.findOne({ email, isDeleted: false }),
-      staff.findOne({ email, isDeleted: false }),
-      Tenant.findOne({ email, isDeleted: false }),
-    ]);
+//   const [isCompanyAlreadyExist, isstaffAlreadyExist, isStudentAlreadyExist] =
+//     await Promise.all([
+//       Company.findOne({ email, isDeleted: false }),
+//       staff.findOne({ email, isDeleted: false }),
+//       Tenant.findOne({ email, isDeleted: false }),
+//     ]);
 
-  if (isCompanyAlreadyExist || isstaffAlreadyExist || isStudentAlreadyExist) {
-    throw new CustomError(
-      statusCodes?.conflict,
-      Message?.alreadyExist,
-      errorCodes?.already_exist
-    );
-  }
+//   if (isCompanyAlreadyExist || isstaffAlreadyExist || isStudentAlreadyExist) {
+//     throw new CustomError(
+//       statusCodes?.conflict,
+//       Message?.alreadyExist,
+//       errorCodes?.already_exist
+//     );
+//   }
 
 
-  const newStaff = await staff.create({
+//   const newStaff = await staff.create({
+//     staffName,
+//     email,
+//     password,
+//     phoneNo,
+//     address,
+//     companyId: companyId,
+//     designation,
+//     Salary: salary,
+//     cnic
+//   });
+
+//   const CompanyDetails = await Company.findById(companyId);
+
+//   if (CompanyDetails.isMailStatus) {
+//     await sendStaffRegistrationEmail(newStaff, CompanyDetails);
+//   }
+//   if (CompanyDetails.whatappStatus) {
+//     await sendWhatsAppMessage(newStaff, CompanyDetails);
+//   }
+
+//   return newStaff
+// }
+export const createStaff = async (req) => {
+  const {
     staffName,
     email,
     password,
     phoneNo,
     address,
-    companyId: companyId,
+    companyId,
     designation,
-    Salary: salary,
-    cnic
-  });
+    salary,
+    cnic,
+  } = req.body;
 
-  const CompanyDetails = await Company.findById(companyId);
+  const normalizedEmail = email.toLowerCase().trim();
 
-  if (CompanyDetails.isMailStatus) {
-    await sendStaffRegistrationEmail(newStaff, CompanyDetails);
+  const session = await mongoose.startSession();
+
+  try {
+    let newStaff;
+
+    await session.withTransaction(async () => {
+
+      // 1. Find Staff role
+      const staffRole = await Role.findOne({
+        name: "Staff",
+      }).session(session);
+
+      if (!staffRole) {
+        throw new CustomError(
+          statusCodes?.notFound,
+          "Staff role not found",
+          errorCodes?.not_found
+        );
+      }
+
+      // 2. Find existing User
+      let user = await User.findOne({
+        email: normalizedEmail,
+        isDeleted: false,
+      }).session(session);
+
+      // 3. Create User if it doesn't exist
+      if (!user) {
+        const createdUsers = await User.create(
+          [
+            {
+              fullname: staffName,
+              email: normalizedEmail,
+              password,
+              phoneNo,
+            },
+          ],
+          { session }
+        );
+
+        user = createdUsers[0];
+      }
+
+      // 4. Check whether User already has Staff role
+      //    in this company
+      const existingUserRole = await UserRole.findOne({
+        userId: user._id,
+        roleId: staffRole._id,
+        companyId,
+      }).session(session);
+
+      if (existingUserRole) {
+        throw new CustomError(
+          statusCodes?.conflict,
+          Message?.alreadyExist,
+          errorCodes?.already_exist
+        );
+      }
+
+      // 5. Create UserRole
+      await UserRole.create(
+        [
+          {
+            userId: user._id,
+            roleId: staffRole._id,
+            companyId,
+          },
+        ],
+        { session }
+      );
+
+      // 6. Create Staff profile
+      const createdStaff = await staff.create(
+        [
+          {
+            userId: user._id,
+            staffName,
+            email: normalizedEmail,
+            phoneNo,
+            address,
+            companyId,
+            designation,
+            Salary: salary,
+            cnic,
+          },
+        ],
+        { session }
+      );
+
+      newStaff = createdStaff[0];
+    });
+
+    // Transaction successfully committed.
+    // External services happen AFTER commit.
+
+    const companyDetails = await Company.findById(companyId);
+
+    if (
+      companyDetails?.isMailStatus
+    ) {
+      await sendStaffRegistrationEmail(
+        newStaff,
+        companyDetails
+      );
+    }
+
+    if (
+      companyDetails?.whatappStatus
+    ) {
+      await sendWhatsAppMessage(
+        newStaff,
+        companyDetails
+      );
+    }
+
+    return newStaff;
+
+  } finally {
+    await session.endSession();
   }
-  if (CompanyDetails.whatappStatus) {
-    await sendWhatsAppMessage(newStaff, CompanyDetails);
-  }
+};
 
-  return newStaff
-}
 
 const sendWhatsAppMessage = async (tenant, CompanyDetails) => {
   try {
