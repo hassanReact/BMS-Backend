@@ -4,6 +4,11 @@ import jwt from "jsonwebtoken";
 
 const agentSchema = new Schema(
   {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
     agentName: {
       type: String,
     },
@@ -20,7 +25,7 @@ const agentSchema = new Schema(
       type: String,
       default: "Agent",
     },
-    status:{
+    status: {
       type: Boolean,
       default: true
     },
