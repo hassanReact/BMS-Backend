@@ -536,57 +536,98 @@ export const universalLogin = async (req) => {
   };
 };
 
-const generateAccessAndRefreshTokens = async (userId) => {
-  const company = await Company.findById(userId);
-  const agent = await Agent.findById(userId);
-  const tenant = await Tenant.findById(userId);
-  const owner = await Owner.findById(userId)
+// const generateAccessAndRefreshTokens = async (userId) => {
+//   const company = await Company.findById(userId);
+//   const agent = await Agent.findById(userId);
+//   const tenant = await Tenant.findById(userId);
+//   const owner = await Owner.findById(userId)
   
-  let user;
-  let userType;
+//   let user;
+//   let userType;
 
-  if (company) {
-    user = company;
-    userType = "company";
-  } else if (agent) {
-    user = agent;
-    userType = "agent";
-  } else if (tenant) {
-    user = tenant;
-    userType = "tenant";
-  } else if (owner) {
-    user = owner;
-    userType = "owner";
-  } else {
-    throw new CustomError(
-      statusCodes?.notFound,
-      "User not found in any collection.",
-      errorCodes?.user_not_found
-    );
-  }
+//   if (company) {
+//     user = company;
+//     userType = "company";
+//   } else if (agent) {
+//     user = agent;
+//     userType = "agent";
+//   } else if (tenant) {
+//     user = tenant;
+//     userType = "tenant";
+//   } else if (owner) {
+//     user = owner;
+//     userType = "owner";
+//   } else {
+//     throw new CustomError(
+//       statusCodes?.notFound,
+//       "User not found in any collection.",
+//       errorCodes?.user_not_found
+//     );
+//   }
 
-  let accessToken, refreshToken;
-  if (userType === "company") {
-    accessToken = company.generateAccessToken();
-    refreshToken = company.generateRefreshToken();
-    user.refreshToken = refreshToken;
-  } else if (userType === "agent") {
-    accessToken = agent.generateAccessToken();
-    refreshToken = agent.generateRefreshToken();
-    user.refreshToken = refreshToken;
-  } else if (userType === "tenant") {
-    accessToken = tenant.generateAccessToken();
-    refreshToken = tenant.generateRefreshToken();
-    user.refreshToken = refreshToken;
-  } else if (userType === "owner") {
-    accessToken = owner.generateAccessToken();
-    refreshToken = owner.generateRefreshToken();
-    user.refreshToken = refreshToken;
-  }
+//   let accessToken, refreshToken;
+//   if (userType === "company") {
+//     accessToken = company.generateAccessToken();
+//     refreshToken = company.generateRefreshToken();
+//     user.refreshToken = refreshToken;
+//   } else if (userType === "agent") {
+//     accessToken = agent.generateAccessToken();
+//     refreshToken = agent.generateRefreshToken();
+//     user.refreshToken = refreshToken;
+//   } else if (userType === "tenant") {
+//     accessToken = tenant.generateAccessToken();
+//     refreshToken = tenant.generateRefreshToken();
+//     user.refreshToken = refreshToken;
+//   } else if (userType === "owner") {
+//     accessToken = owner.generateAccessToken();
+//     refreshToken = owner.generateRefreshToken();
+//     user.refreshToken = refreshToken;
+//   }
 
-  await user.save({ validateBeforeSave: false });
+//   await user.save({ validateBeforeSave: false });
 
-  return { accessToken, refreshToken };
+//   return { accessToken, refreshToken };
+// };
+
+const generateAccessAndRefreshTokens = async (
+  user,
+  userRole
+) => {
+
+  const payload = {
+    userId: user._id,
+    email: user.email,
+    roleId: userRole.roleId._id,
+    role: userRole.roleId.name,
+    companyId: userRole.companyId._id,
+  };
+
+  const accessToken = jwt.sign(
+    payload,
+    process.env.ACCESS_TOKEN_SECRET,
+    {
+      expiresIn: process.env.ACCESS_TOKEN_EXPIRY,
+    }
+  );
+
+  const refreshToken = jwt.sign(
+    payload,
+    process.env.REFRESH_TOKEN_SECRET,
+    {
+      expiresIn: process.env.REFRESH_TOKEN_EXPIRY,
+    }
+  );
+
+  user.refreshToken = refreshToken;
+
+  await user.save({
+    validateBeforeSave: false,
+  });
+
+  return {
+    accessToken,
+    refreshToken,
+  };
 };
 
 export const selectLoginRole = async (req) => {
