@@ -4,6 +4,11 @@ import jwt from "jsonwebtoken";
 
 const companySchema = new Schema(
   {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
     companyName: {
       type: String
     },
@@ -18,9 +23,9 @@ const companySchema = new Schema(
     },
     role: {
       type: String,
-      default:"companyAdmin"
+      default: "companyAdmin"
     },
-    status:{
+    status: {
       type: Boolean,
       default: true
     },
@@ -43,7 +48,7 @@ const companySchema = new Schema(
     smtpCode: {
       type: String,
     },
-    isMailStatus:{
+    isMailStatus: {
       type: Boolean,
       default: false
     },
@@ -54,14 +59,14 @@ const companySchema = new Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Subscription"
     },
-    subcriptionBuyDate:{
+    subcriptionBuyDate: {
       type: Date
     },
-    whatappStatus:{
+    whatappStatus: {
       type: Boolean,
       default: false
     },
-    companyLogo:{
+    companyLogo: {
       type: String,
     },
   },

@@ -10,6 +10,61 @@ import Subscription from "../models/subscription.model.js";
 import { commentAndResolved } from "../controllers/company.controller.js";
 import bcrypt from "bcrypt";
 import Owner from "../models/owner.model.js";
+import mongoose from "mongoose";
+import User from "../models/user.model.js";
+import Role from "../models/role.model.js";
+import UserRole from "../models/userRole.model.js";
+
+// export const companyRegistration = async (req) => {
+//   const {
+//     companyName,
+//     email,
+//     password,
+//     phoneNo,
+//     address,
+//     currencyCode,
+//     gstnumber,
+//   } = req.body;
+//   // const isCompanyAlreadyExist = await Company.findOne({ email });
+
+//   const [isCompanyAlreadyExist, isAgentAlreadyExist, isTenantAlreadyExist] =
+//     await Promise.all([
+//       Company.findOne({ email, isDeleted: false }),
+//       Agent.findOne({ email, isDeleted: false }),
+//       Tenant.findOne({ email, isDeleted: false }),
+//     ]);
+
+//   if (isCompanyAlreadyExist || isAgentAlreadyExist || isTenantAlreadyExist) {
+//     throw new CustomError(
+//       statusCodes?.conflict,
+//       Message?.alreadyExist,
+//       errorCodes?.already_exist
+//     );
+//   }
+
+//   const company = await Company.create({
+//     companyName,
+//     email,
+//     password,
+//     phoneNo,
+//     address,
+//     currencyCode,
+//     gstnumber,
+//   });
+
+//   const createdCompany = await Company.findById(company._id).select(
+//     "-password -refreshToken"
+//   );
+
+//   if (!createdCompany) {
+//     return new CustomError(
+//       statusCodes?.serviceUnavailable,
+//       Message?.serverError,
+//       errorCodes?.service_unavailable
+//     );
+//   }
+//   return createdCompany;
+// };
 
 export const companyRegistration = async (req) => {
   const {
@@ -21,47 +76,109 @@ export const companyRegistration = async (req) => {
     currencyCode,
     gstnumber,
   } = req.body;
-  // const isCompanyAlreadyExist = await Company.findOne({ email });
 
-  const [isCompanyAlreadyExist, isAgentAlreadyExist, isTenantAlreadyExist] =
-    await Promise.all([
-      Company.findOne({ email, isDeleted: false }),
-      Agent.findOne({ email, isDeleted: false }),
-      Tenant.findOne({ email, isDeleted: false }),
-    ]);
+  const normalizedEmail = email.toLowerCase().trim();
 
-  if (isCompanyAlreadyExist || isAgentAlreadyExist || isTenantAlreadyExist) {
-    throw new CustomError(
-      statusCodes?.conflict,
-      Message?.alreadyExist,
-      errorCodes?.already_exist
-    );
+  const session = await mongoose.startSession();
+
+  try {
+    let createdCompany;
+
+    await session.withTransaction(async () => {
+
+      // 1. Find CompanyAdmin role
+      const companyAdminRole = await Role.findOne({
+        name: "CompanyAdmin",
+      }).session(session);
+
+      if (!companyAdminRole) {
+        throw new CustomError(
+          statusCodes?.notFound,
+          "CompanyAdmin role not found",
+          errorCodes?.not_found
+        );
+      }
+
+      // 2. Check User
+      const existingUser = await User.findOne({
+        email: normalizedEmail,
+        isDeleted: false,
+      }).session(session);
+
+      if (existingUser) {
+        throw new CustomError(
+          statusCodes?.conflict,
+          Message?.alreadyExist,
+          errorCodes?.already_exist
+        );
+      }
+
+      // 3. Create User FIRST
+      const users = await User.create(
+        [
+          {
+            fullname: companyName,
+            email: normalizedEmail,
+            password,
+            phoneNo,
+          },
+        ],
+        { session }
+      );
+
+      const user = users[0];
+
+      // 4. Create Company using User ID
+      const companies = await Company.create(
+        [
+          {
+            userId: user._id,
+            companyName,
+            email: normalizedEmail,
+            password,
+            phoneNo,
+            address,
+            currencyCode,
+            gstnumber,
+          },
+        ],
+        { session }
+      );
+
+      createdCompany = companies[0];
+
+      // 5. Create UserRole
+      await UserRole.create(
+        [
+          {
+            userId: user._id,
+            roleId: companyAdminRole._id,
+            companyId: createdCompany._id,
+          },
+        ],
+        { session }
+      );
+    });
+
+    // Transaction committed
+
+    const result = await Company.findById(createdCompany._id)
+      .select("-password -refreshToken");
+
+    if (!result) {
+      throw new CustomError(
+        statusCodes?.serviceUnavailable,
+        Message?.serverError,
+        errorCodes?.service_unavailable
+      );
+    }
+
+    return result;
+
+  } finally {
+    await session.endSession();
   }
-
-  const company = await Company.create({
-    companyName,
-    email,
-    password,
-    phoneNo,
-    address,
-    currencyCode,
-    gstnumber,
-  });
-
-  const createdCompany = await Company.findById(company._id).select(
-    "-password -refreshToken"
-  );
-
-  if (!createdCompany) {
-    return new CustomError(
-      statusCodes?.serviceUnavailable,
-      Message?.serverError,
-      errorCodes?.service_unavailable
-    );
-  }
-  return createdCompany;
 };
-
 export const addSMTPMailPassword = async (req) => {
   const { id, smtpMail, smtpCode } = req.body;
 
