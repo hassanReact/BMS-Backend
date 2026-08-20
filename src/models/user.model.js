@@ -19,11 +19,12 @@ const userSchema = new Schema(
     role: {
       type: String,
       enum: ["Staff", "Resident", "admin", "CompanyAdmin"],
-      default: ""
+    
     },
     address: {
       type: String
     },
+    
     isDeleted: {
       type: String,
       default: false
