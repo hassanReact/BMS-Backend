@@ -6,42 +6,170 @@ import Company from "../models/company.model.js";
 import ExcelJS from 'exceljs';
 import { FactorListInstance } from "twilio/lib/rest/verify/v2/service/entity/factor.js";
 import Booking from "../models/booking,model.js";
+import User from "../models/user.model.js";
+import Role from "../models/role.model.js";
+import UserRole from "../models/userRole.model.js";
+import mongoose from "mongoose";
+
+// export const registerOwner = async (req, res) => {
+
+//   const { ownerName, email, password, phoneNo, address, companyId } = req.body;
+
+//   const isOwnerAlreadyExist = await Owner.findOne({ email, isDeleted: false } );
+
+//   if (isOwnerAlreadyExist) {
+//     throw new CustomError(
+//       statusCodes?.conflict,
+//       Message?.alreadyExist,
+//       errorCodes?.already_exist
+//     );
+//   }
+
+//   const owner = await Owner.create({
+//     ownerName,
+//     email,
+//     password,
+//     phoneNo,
+//     address,
+//     companyId: companyId,
+//   });
+
+//   const createdOwner = await Owner.findById(owner._id).select(
+//     "-password -refreshToken"
+//   );
+
+//   if (!createdOwner) {
+//     return new CustomError(
+//       statusCodes?.serviceUnavailable,
+//       Message?.serverError,
+//       errorCodes?.service_unavailable
+//     );
+//   }
+//   return createdOwner;
+// };
 
 export const registerOwner = async (req, res) => {
-
-  const { ownerName, email, password, phoneNo, address, companyId } = req.body;
-
-  const isOwnerAlreadyExist = await Owner.findOne({ email, isDeleted: false } );
-
-  if (isOwnerAlreadyExist) {
-    throw new CustomError(
-      statusCodes?.conflict,
-      Message?.alreadyExist,
-      errorCodes?.already_exist
-    );
-  }
-
-  const owner = await Owner.create({
+  const {
     ownerName,
     email,
     password,
     phoneNo,
     address,
-    companyId: companyId,
-  });
+    companyId,
+  } = req.body;
 
-  const createdOwner = await Owner.findById(owner._id).select(
-    "-password -refreshToken"
-  );
+  const session = await mongoose.startSession();
 
-  if (!createdOwner) {
-    return new CustomError(
-      statusCodes?.serviceUnavailable,
-      Message?.serverError,
-      errorCodes?.service_unavailable
+  try {
+    let createdOwner;
+
+    await session.withTransaction(async () => {
+
+      // 1. Find the Owner role
+      const ownerRole = await Role.findOne({
+        name: "Owner",
+      }).session(session);
+
+      if (!ownerRole) {
+        throw new CustomError(
+          statusCodes?.notFound,
+          "Owner role not found",
+          errorCodes?.not_found
+        );
+      }
+
+      // 2. Find existing User by email
+      let user = await User.findOne({
+        email: email.toLowerCase().trim(),
+        isDeleted: false,
+      }).session(session);
+
+      // 3. If User doesn't exist, create the User
+      if (!user) {
+        const createdUsers = await User.create(
+          [
+            {
+              fullname: ownerName,
+              email: email.toLowerCase().trim(),
+              password,
+              phoneNo,
+            },
+          ],
+          { session }
+        );
+
+        user = createdUsers[0];
+      }
+
+      // 4. Check whether this User already has Owner
+      //    role in this company
+      const existingUserRole = await UserRole.findOne({
+        userId: user._id,
+        roleId: ownerRole._id,
+        companyId,
+      }).session(session);
+
+      if (existingUserRole) {
+        throw new CustomError(
+          statusCodes?.conflict,
+          Message?.alreadyExist,
+          errorCodes?.already_exist
+        );
+      }
+
+      // 5. Create UserRole
+      await UserRole.create(
+        [
+          {
+            userId: user._id,
+            roleId: ownerRole._id,
+            companyId,
+          },
+        ],
+        { session }
+      );
+
+      // 6. Check if Owner profile already exists
+      const existingOwner = await Owner.findOne({
+        userId: user._id,
+        companyId,
+        isDeleted: false,
+      }).session(session);
+
+      if (existingOwner) {
+        throw new CustomError(
+          statusCodes?.conflict,
+          Message?.alreadyExist,
+          errorCodes?.already_exist
+        );
+      }
+
+      // 7. Create Owner business profile
+      const owner = await Owner.create(
+        [
+          {
+            userId: user._id,
+            ownerName,
+            email: user.email,
+            phoneNo,
+            address,
+            companyId,
+          },
+        ],
+        { session }
+      );
+
+      createdOwner = owner[0];
+    });
+
+    // 8. Return created Owner
+    return await Owner.findById(createdOwner._id).select(
+      "-password -refreshToken"
     );
+
+  } finally {
+    await session.endSession();
   }
-  return createdOwner;
 };
 
 export const getOwnerById = async (req, res) => { 
@@ -99,7 +227,7 @@ export const getAllOwnerProperties = async (req, res) => {
   return properties;
 };
 
-export const getOwnerPropertyByIdd = async (req, res) => {
+export const getOwnerPropertyById = async (req, res) => {
   const { ownerId, propertyId } = req.query;
 
   if (!ownerId || !propertyId) {

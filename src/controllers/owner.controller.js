@@ -13,7 +13,7 @@ export const editOwner = async(req, res) => {
   res.status(statusCodes?.created).send(ownerData);
 };
 
-export const getOwnerProperties = async(req, res) => {
+export const getAllOwnerProperties = async(req, res) => {
   const ownerPropertyData = await ownerService.getAllOwnerProperties(req, res);
   res.status(statusCodes?.created).send(ownerPropertyData);
 };

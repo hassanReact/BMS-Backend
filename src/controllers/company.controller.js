@@ -58,6 +58,16 @@ export const universalLogin = async (req, res) => {
     .send(data);
 };
 
+export const selectLoginRole = async (req, res) => {
+  const data = await companyServices.selectLoginRole(req);
+
+  res
+    .status(statusCodes?.ok)
+    .cookie("accessToken", data.accessToken, data.options)
+    .cookie("refreshToken", data.refreshToken, data.options)
+    .send(data);
+};
+
 export const getAllCompany = async (req, res) => {
   const companyData = await companyServices.getAllCompany(req, res);
   res.status(statusCodes?.created).send(companyData);

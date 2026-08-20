@@ -4,6 +4,11 @@ import jwt from "jsonwebtoken";
 
 const ownerSchema = new Schema(
   {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
     ownerName: {
       type: String
     },
@@ -18,7 +23,7 @@ const ownerSchema = new Schema(
     },
     role: {
       type: String,
-      default:"owner"
+      default: "owner"
     },
     address: {
       type: String

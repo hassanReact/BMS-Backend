@@ -12,14 +12,14 @@ import {
   getOwnerById,
   getPropertyByOwnerId,
   bulkUploadOwner,
-  getOwnerProperties,
+  getAllOwnerProperties,
   getOwnerPropertiesById
 } from "../controllers/owner.controller.js";
 import { authMiddleware } from "../middlewares/auth.middleware.js";
 
 router.post("/register", asyncHandler(ownerRegistration));
 router.get("/getAllOwner", asyncHandler(getAllOwner));
-router.get("/getOwnerProperties", asyncHandler(getOwnerProperties));
+router.get("/getAllOwnerProperties", asyncHandler(getAllOwnerProperties));
 router.get("/getOwnerPropertiesById", asyncHandler(getOwnerPropertiesById));
 router.post("/login", asyncHandler(ownerLogin));
 router.put("/edit", asyncHandler(editOwner) );

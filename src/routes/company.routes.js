@@ -2,12 +2,14 @@ import { Router } from "express";
 import { asyncHandler } from "../utils/asyncWrapper.js";
 const router = Router();
 import { authMiddleware } from "../middlewares/auth.middleware.js";
-import {companyRegistration, universalLogin, getAllCompany,editCompany,totalData,updateWhataapStatus, deleteCompany,changePassword,totalActiveCompany,commentAndResolved,addSubcriptionPlan,getCompanyById,changestatus,addSMTPMailPassword,updateMailStatus,companySubscriptionDetails} from "../controllers/company.controller.js"
+import { companyRegistration, universalLogin,selectLoginRole, getAllCompany, editCompany, totalData, updateWhataapStatus, deleteCompany, changePassword, totalActiveCompany, commentAndResolved, addSubcriptionPlan, getCompanyById, changestatus, addSMTPMailPassword, updateMailStatus, companySubscriptionDetails } from "../controllers/company.controller.js"
 import { transaction } from "../middlewares/transaction.middleware.js";
 
 router.post("/register", asyncHandler(companyRegistration));
 router.get("/getAllCompanies", asyncHandler(getAllCompany))
 router.post("/login", asyncHandler(universalLogin));
+router.post( "/select-role", asyncHandler(selectLoginRole)
+);
 router.put("/edit", asyncHandler(editCompany));
 router.patch("/delete", asyncHandler(deleteCompany));
 
@@ -18,7 +20,7 @@ router.get("/getCompanyById", asyncHandler(getCompanyById));
 router.patch("/changestatus", asyncHandler(changestatus));
 router.patch("/updateMailStatus", asyncHandler(updateMailStatus));
 router.patch("/updateWhataapStatus", asyncHandler(updateWhataapStatus));
-router.patch("/addSubcriptionPlan",transaction, asyncHandler(addSubcriptionPlan));
+router.patch("/addSubcriptionPlan", transaction, asyncHandler(addSubcriptionPlan));
 router.get("/getCompananySubcription", asyncHandler(companySubscriptionDetails));
 router.get("/totalActiveCompany", asyncHandler(totalActiveCompany));
 

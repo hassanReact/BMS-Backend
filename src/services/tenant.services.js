@@ -10,6 +10,83 @@ import ExcelJS from 'exceljs';
 import bcrypt from 'bcrypt';
 import sendWhatsApp from "../core/helpers/twillio.js"
 import Property from "../models/property.model.js";
+import mongoose from "mongoose";
+import User from "../models/user.model.js";
+import Role from "../models/role.model.js";
+import UserRole from "../models/userRole.model.js";
+
+// export const createTenant = async (req) => {   
+//   const {
+//     tenantName,
+//     email,
+//     password,
+//     phoneno,
+//     identityCardType,
+//     identityNo,
+//     address,
+//     reporterId,
+//     //accountName,
+//     companyId,
+//     documents,
+//   } = req.body;
+
+//   const [isCompanyAlreadyExist, isAgentAlreadyExist, isStudentAlreadyExist] =
+//     await Promise.all([
+//       Company.findOne({ email, isDeleted: false }),
+//       Agent.findOne({ email, isDeleted: false }),
+//       Tenant.findOne({ email, isDeleted: false }),
+//     ]);
+
+//   if (isCompanyAlreadyExist || isAgentAlreadyExist || isStudentAlreadyExist) {
+//     throw new CustomError(
+//       statusCodes?.conflict,
+//       Message?.alreadyExist,
+//       errorCodes?.already_exist
+//     );
+//   }
+
+//   const uploadedFiles = req.files.map((file) => ({
+//     filetype: file.mimetype,
+//     name: file.originalname,
+//     url: `uploads/tenant/${file.filename}`,
+//   }));
+
+//   const tenant = await Tenant.create({
+//     tenantName,
+//     email,
+//     password,
+//     phoneno,
+//     identityCardType,
+//     identityNo,
+//     files: uploadedFiles,
+//     address,
+//     reporterId,
+//     //accountName,
+//     companyId,
+//   });
+
+//   if (!tenant) {
+//     throw new CustomError(
+//       statusCodes?.serviceUnavailable,
+//       Message?.serverError,
+//       errorCodes?.service_unavailable
+//     );
+//   }
+
+//   const CompanyDetails = await Company.findById(companyId);
+//   if(CompanyDetails && process.env.FEATURE_EMAIL == 'on' && CompanyDetails.isMailStatus){
+//    await sendEmailToTenant(tenant,CompanyDetails);
+//   }
+//   if (CompanyDetails && process.env.FEATURE_WHATSAAP == 'on' && CompanyDetails.whatappStatus) {
+//   await sendWhatsAppMessage(tenant, CompanyDetails);
+//   }
+
+//   const createdTenant = await Tenant.findById(tenant._id).select(
+//     "-password -refreshToken"
+//   );
+
+//   return createdTenant;
+// };
 
 export const createTenant = async (req) => {
   const {
@@ -21,67 +98,127 @@ export const createTenant = async (req) => {
     identityNo,
     address,
     reporterId,
-    //accountName,
     companyId,
-    documents,
   } = req.body;
 
-  const [isCompanyAlreadyExist, isAgentAlreadyExist, isStudentAlreadyExist] =
-    await Promise.all([
-      Company.findOne({ email, isDeleted: false }),
-      Agent.findOne({ email, isDeleted: false }),
-      Tenant.findOne({ email, isDeleted: false }),
-    ]);
+  const session = await mongoose.startSession();
 
-  if (isCompanyAlreadyExist || isAgentAlreadyExist || isStudentAlreadyExist) {
-    throw new CustomError(
-      statusCodes?.conflict,
-      Message?.alreadyExist,
-      errorCodes?.already_exist
+  try {
+    let createdTenant;
+
+    await session.withTransaction(async () => {
+
+      // 1. Find Tenant role
+      const tenantRole = await Role.findOne({
+        name: "Tenant",
+      }).session(session);
+
+      if (!tenantRole) {
+        throw new CustomError(
+          statusCodes?.notFound,
+          "Tenant role not found",
+          errorCodes?.not_found
+        );
+      }
+
+      // 2. Find existing User
+      let user = await User.findOne({
+        email: email.toLowerCase().trim(),
+        isDeleted: false,
+      }).session(session);
+
+      // 3. Create User only if it doesn't exist
+      if (!user) {
+        const createdUsers = await User.create(
+          [
+            {
+              fullname: tenantName,
+              email: email.toLowerCase().trim(),
+              password,
+              phoneNo: phoneno,
+            },
+          ],
+          { session }
+        );
+
+        user = createdUsers[0];
+      }
+
+      // 4. Check whether this User is already Tenant
+      //    in this company
+      const existingUserRole = await UserRole.findOne({
+        userId: user._id,
+        roleId: tenantRole._id,
+        companyId,
+      }).session(session);
+
+      if (existingUserRole) {
+        throw new CustomError(
+          statusCodes?.conflict,
+          Message?.alreadyExist,
+          errorCodes?.already_exist
+        );
+      }
+
+      // 5. Create UserRole
+      await UserRole.create(
+        [
+          {
+            userId: user._id,
+            roleId: tenantRole._id,
+            companyId,
+          },
+        ],
+        { session }
+      );
+
+      // 6. Create Tenant profile
+      const tenants = await Tenant.create(
+        [
+          {
+            userId: user._id,
+            tenantName,
+            email: user.email,
+            phoneno,
+            identityCardType,
+            identityNo,
+            address,
+            reporterId,
+            companyId,
+          },
+        ],
+        { session }
+      );
+
+      createdTenant = tenants[0];
+    });
+
+    // External operations AFTER transaction
+    const companyDetails = await Company.findById(companyId);
+
+    if (
+      companyDetails &&
+      process.env.FEATURE_EMAIL === "on" &&
+      companyDetails.isMailStatus
+    ) {
+      await sendEmailToTenant(createdTenant, companyDetails);
+    }
+
+    if (
+      companyDetails &&
+      process.env.FEATURE_WHATSAAP === "on" &&
+      companyDetails.whatappStatus
+    ) {
+      await sendWhatsAppMessage(createdTenant, companyDetails);
+    }
+
+    return await Tenant.findById(createdTenant._id).select(
+      "-password -refreshToken"
     );
+
+  } finally {
+    await session.endSession();
   }
-
-  const uploadedFiles = req.files.map((file) => ({
-    filetype: file.mimetype,
-    name: file.originalname,
-    url: `uploads/tenant/${file.filename}`,
-  }));
-
-  const tenant = await Tenant.create({
-    tenantName,
-    email,
-    password,
-    phoneno,
-    identityCardType,
-    identityNo,
-    files: uploadedFiles,
-    address,
-    reporterId,
-    //accountName,
-    companyId,
-  });
-
-  if (!tenant) {
-    throw new CustomError(
-      statusCodes?.serviceUnavailable,
-      Message?.serverError,
-      errorCodes?.service_unavailable
-    );
-  }
-
-  const CompanyDetails = await Company.findById(companyId);
-  if(CompanyDetails && process.env.FEATURE_EMAIL == 'on' && CompanyDetails.isMailStatus){
-   await sendEmailToTenant(tenant,CompanyDetails);
-  }
-  if (CompanyDetails && process.env.FEATURE_WHATSAAP == 'on' && CompanyDetails.whatappStatus) {
-  await sendWhatsAppMessage(tenant, CompanyDetails);
-  }
-
-  const createdTenant = await Tenant.findById(tenant._id).select(
-    "-password -refreshToken"
-  );
-
-  return createdTenant;
 };
 
 const sendWhatsAppMessage = async (tenant, CompanyDetails) => {
@@ -370,7 +507,7 @@ export const getTenantsById = async (req, res, next) => {
       errorCodes?.invalid_request
     );
   }
-  const tenant = await Tenant.findById(id);
+  const tenant = await Tenant.findOne({_id:id, isDeleted: false});
 
   if (!tenant) {
     throw new CustomError(
@@ -380,7 +517,7 @@ export const getTenantsById = async (req, res, next) => {
     );
   }
 
-  const bookings = await Booking.find({ tenantId: id }).populate("propertyId");
+  const bookings = await Booking.find({ tenantId: id , isDeleted: false }).populate("propertyId");
 
   const formattedBookings = bookings.map((bookingData) => ({
     propertyName: bookingData.propertyId?.propertyname,
@@ -434,6 +571,8 @@ export const getAllTenants = async (req, res, next) => {
 
 export const getAllDocs = async (req, res, next) => {
   const { id: tenantId } = req.query;
+
+  console.log(tenantId);
 
   const tenantsDocs = await TenantDocs.find({
     tenantId,
@@ -499,6 +638,14 @@ export const getMyTenants = async (req, res) => {
       if (creater) {
         Creater = creater.companyName;
       }
+    }
+
+    if(!Creater){
+      throw new CustomError(
+        statusCodes?.notFound,
+        "No matching active Agent or Company found for this reporter ID",
+        errorCodes?.not_found
+      )
     }
     finalResponse.push({ Creater, ...tenat });
   }
