@@ -150,3 +150,5 @@ package-lock.json
 
 
 logs\\.*
+
+desktop.ini

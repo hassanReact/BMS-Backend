@@ -251,7 +251,7 @@ export const editProperty = async (req, res) => {
   return updatedProperty;
 };
 
-export const uploadImages = async (req, res, next) => {
+export const uploadImages = async (req, res, next) => { 
   // const tenantId = req.query.id;
 
   const { name, propertyId } = req.body;
@@ -261,6 +261,7 @@ export const uploadImages = async (req, res, next) => {
     documentName: name,
     url: `uploads/${req.file.filename}`,
   });
+
 
   if (!document) {
     throw new CustomError(
