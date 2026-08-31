@@ -19,59 +19,6 @@ import AccountsVoucher from "../models/accountsVoucher.model.js";
 import UnifiedVoucher from "../models/UnifiedVoucher.model.js";
 import ExcelJS from 'exceljs';
 
-
-// export const createbill = async (req, res) => {
-//   const {
-//     tenantId,
-//     propertyId,
-//     billingMonth,
-//     rentAmount,
-//     extraAmount,
-//     electricityUnit,
-//     electricityRate,
-//     electricityBillAmount,
-//     totalBillAmount,
-//     companyId,
-//     note
-//   } = req.body;
-
-//   const totalExtraAmount = extraCharges.reduce((sum, charge) => sum + charge.price, 0);
-
-//   const newBill = await Bill.create({
-//     tenantId,
-//     propertyId,
-//     billingMonth,
-//     rentAmount,
-//     extraAmount:totalExtraAmount,
-//     electricityUnit,
-//     electricityRate,
-//     electricityBillAmount,
-//     totalBillAmount,
-//     companyId,
-//     note
-//   });
-
-//   const property = await Property.findById(propertyId);
-//   if (!property) {
-//     throw new CustomError(
-//       statusCodes?.notFound,
-//       Message?.notFound,
-//       errorCodes?.not_found
-//     );
-//   }
-
-//   const tenant = await Tenant.findById(tenantId);
-//   if (!tenant) {
-//     throw new CustomError(
-//       statusCodes?.notFound,
-//       Message?.notFound,
-//       errorCodes?.not_found
-//     );
-//   }
-
-//   return newBill;
-// };
-
 export const createbill = async (req, res) => {
   const {
     tenantId,
@@ -95,7 +42,7 @@ export const createbill = async (req, res) => {
     // totalgst,
   } = req.body;
 
-  console.log("Request Body:", req.body);
+  // console.log("Request Body:", req.body);
 
   const billingDate = new Date(billingMonth + 'T00:00:00');
   const monthNumber = parseInt(billingMonth.split('-')[1]);

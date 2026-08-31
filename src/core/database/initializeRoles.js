@@ -1,6 +1,7 @@
 import Role from "../../models/role.model.js";
 
 const defaultRoles = [
+  "SuperAdmin",
   "CompanyAdmin",
   "Owner",
   "Tenant",

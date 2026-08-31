@@ -97,8 +97,6 @@ const accountsVoucherSchema = new mongoose.Schema({
 // Indexes for better performance
 accountsVoucherSchema.index({ companyId: 1, voucherType: 1 });
 accountsVoucherSchema.index({ companyId: 1, date: -1 });
-accountsVoucherSchema.index({ voucherNo: 1 });
-
 
 const AccountsVoucher = mongoose.model("AccountVoucher", accountsVoucherSchema);
 

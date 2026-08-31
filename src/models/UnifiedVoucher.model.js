@@ -242,7 +242,6 @@ unifiedVoucherSchema.pre('save', async function (next) {
 // Indexes for performance
 unifiedVoucherSchema.index({ companyId: 1, voucherType: 1, paymentStatus: 1 });
 unifiedVoucherSchema.index({ companyId: 1, date: -1 });
-unifiedVoucherSchema.index({ voucherNo: 1 });
 unifiedVoucherSchema.index({ propertyId: 1, month: 1 });
 unifiedVoucherSchema.index({ 'debit.accountId': 1 });
 unifiedVoucherSchema.index({ 'credit.accountId': 1 });

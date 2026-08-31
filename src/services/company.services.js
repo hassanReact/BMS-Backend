@@ -475,6 +475,7 @@ export const universalLogin = async (req) => {
         companyName: item.companyId.companyName,
       })),
     };
+  
   }
 
   const selectedRole = userRoles[0];
