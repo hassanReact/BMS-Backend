@@ -32,7 +32,7 @@ const userRoleSchema = mongoose.Schema(
 );
 
 userRoleSchema.index(
-    {userId:1,roleId:1,companyId:1},
+    {userId:1},
     {unique:true}
 );
 

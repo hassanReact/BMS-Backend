@@ -16,56 +16,6 @@ import Role from "../models/role.model.js";
 import UserRole from "../models/userRole.model.js";
 import jwt from "jsonwebtoken";
 
-// export const companyRegistration = async (req) => {
-//   const {
-//     companyName,
-//     email,
-//     password,
-//     phoneNo,
-//     address,
-//     currencyCode,
-//     gstnumber,
-//   } = req.body;
-//   // const isCompanyAlreadyExist = await Company.findOne({ email });
-
-//   const [isCompanyAlreadyExist, isAgentAlreadyExist, isTenantAlreadyExist] =
-//     await Promise.all([
-//       Company.findOne({ email, isDeleted: false }),
-//       Agent.findOne({ email, isDeleted: false }),
-//       Tenant.findOne({ email, isDeleted: false }),
-//     ]);
-
-//   if (isCompanyAlreadyExist || isAgentAlreadyExist || isTenantAlreadyExist) {
-//     throw new CustomError(
-//       statusCodes?.conflict,
-//       Message?.alreadyExist,
-//       errorCodes?.already_exist
-//     );
-//   }
-
-//   const company = await Company.create({
-//     companyName,
-//     email,
-//     password,
-//     phoneNo,
-//     address,
-//     currencyCode,
-//     gstnumber,
-//   });
-
-//   const createdCompany = await Company.findById(company._id).select(
-//     "-password -refreshToken"
-//   );
-
-//   if (!createdCompany) {
-//     return new CustomError(
-//       statusCodes?.serviceUnavailable,
-//       Message?.serverError,
-//       errorCodes?.service_unavailable
-//     );
-//   }
-//   return createdCompany;
-// };
 
 export const companyRegistration = async (req) => {
   const {
@@ -87,7 +37,7 @@ export const companyRegistration = async (req) => {
 
     await session.withTransaction(async () => {
 
-      // 1. Check CompanyAdmin role
+      // 1. Find CompanyAdmin role
       const companyAdminRole = await Role.findOne({
         name: "CompanyAdmin",
       }).session(session);
@@ -100,13 +50,13 @@ export const companyRegistration = async (req) => {
         );
       }
 
-      // 2. Check whether this email already has a User
-      let user = await User.findOne({
+      // 2. Check if email already exists
+      const existingUser = await User.findOne({
         email: normalizedEmail,
         isDeleted: false,
       }).session(session);
 
-      if (user) {
+      if (existingUser) {
         throw new CustomError(
           statusCodes?.conflict,
           Message?.alreadyExist,
@@ -114,10 +64,27 @@ export const companyRegistration = async (req) => {
         );
       }
 
-      // 3. Create Company first
+      // 3. Create User first
+      const users = await User.create(
+        [
+          {
+            fullname: companyName,
+            email: normalizedEmail,
+            password,
+            phoneNo,
+            role: "CompanyAdmin", // temporary legacy field
+          },
+        ],
+        { session }
+      );
+
+      const user = users[0];
+
+      // 4. Create Company with userId
       const companies = await Company.create(
         [
           {
+            userId: user._id,
             companyName,
             email: normalizedEmail,
             password,
@@ -132,23 +99,7 @@ export const companyRegistration = async (req) => {
 
       createdCompany = companies[0];
 
-      // 4. Create User
-      const users = await User.create(
-        [
-          {
-            fullname: companyName,
-            email: normalizedEmail,
-            password,
-            phoneNo,
-            role: "CompanyAdmin",
-          },
-        ],
-        { session }
-      );
-
-      user = users[0];
-
-      // 5. Connect User → CompanyAdmin → Company
+      // 5. Create UserRole
       await UserRole.create(
         [
           {
@@ -159,13 +110,7 @@ export const companyRegistration = async (req) => {
         ],
         { session }
       );
-
-      // 6. Connect Company → User
-      createdCompany.userId = user._id;
-      await createdCompany.save({ session });
     });
-
-    // Transaction committed successfully
 
     const result = await Company.findById(createdCompany._id)
       .select("-password -refreshToken");
@@ -448,45 +393,28 @@ export const universalLogin = async (req) => {
   }
 
   // 3. Find all active roles of this user
-  const userRoles = await UserRole.find({
+  const userRoles = await UserRole.findOne({
     userId: user._id,
     Status: "active",
   })
     .populate("roleId")
     .populate("companyId");
 
-  if (!userRoles.length) {
+    if (!userRoles){
     throw new CustomError(
       statusCodes?.forbidden,
-      "No active role assigned to this account.",
+      "No active roles found for this user. Please contact administrator.",
       errorCodes?.unauthorized
     );
   }
 
-  // 4. For now, only handle one role
-  if (userRoles.length > 1) {
-    return {
-      requiresRoleSelection: true,
-      userId: user._id,
-      accounts: userRoles.map((item) => ({
-        roleId: item.roleId._id,
-        role: item.roleId.name,
-        companyId: item.companyId._id,
-        companyName: item.companyId.companyName,
-      })),
-    };
-  
-  }
-
-  const selectedRole = userRoles[0];
-
   // 5. Generate tokens
   const payload = {
-    userId: user._id,
+   userId: user._id,
     email: user.email,
-    role: selectedRole.roleId.name,
-    roleId: selectedRole.roleId._id,
-    companyId: selectedRole.companyId._id,
+    role: userRoles.roleId.name,
+    roleId: userRoles.roleId._id,
+    companyId: userRoles.companyId?._id || null,
   };
 
   const accessToken = jwt.sign(
@@ -527,9 +455,9 @@ export const universalLogin = async (req) => {
       email: user.email,
     },
 
-    role: selectedRole.roleId.name,
-    roleId: selectedRole.roleId._id,
-    companyId: selectedRole.companyId._id,
+    role: userRoles.roleId.name,
+    roleId: userRoles.roleId._id,
+    companyId: userRoles.companyId?._id || null,
 
     accessToken,
     refreshToken,
@@ -537,58 +465,6 @@ export const universalLogin = async (req) => {
   };
 };
 
-// const generateAccessAndRefreshTokens = async (userId) => {
-//   const company = await Company.findById(userId);
-//   const agent = await Agent.findById(userId);
-//   const tenant = await Tenant.findById(userId);
-//   const owner = await Owner.findById(userId)
-  
-//   let user;
-//   let userType;
-
-//   if (company) {
-//     user = company;
-//     userType = "company";
-//   } else if (agent) {
-//     user = agent;
-//     userType = "agent";
-//   } else if (tenant) {
-//     user = tenant;
-//     userType = "tenant";
-//   } else if (owner) {
-//     user = owner;
-//     userType = "owner";
-//   } else {
-//     throw new CustomError(
-//       statusCodes?.notFound,
-//       "User not found in any collection.",
-//       errorCodes?.user_not_found
-//     );
-//   }
-
-//   let accessToken, refreshToken;
-//   if (userType === "company") {
-//     accessToken = company.generateAccessToken();
-//     refreshToken = company.generateRefreshToken();
-//     user.refreshToken = refreshToken;
-//   } else if (userType === "agent") {
-//     accessToken = agent.generateAccessToken();
-//     refreshToken = agent.generateRefreshToken();
-//     user.refreshToken = refreshToken;
-//   } else if (userType === "tenant") {
-//     accessToken = tenant.generateAccessToken();
-//     refreshToken = tenant.generateRefreshToken();
-//     user.refreshToken = refreshToken;
-//   } else if (userType === "owner") {
-//     accessToken = owner.generateAccessToken();
-//     refreshToken = owner.generateRefreshToken();
-//     user.refreshToken = refreshToken;
-//   }
-
-//   await user.save({ validateBeforeSave: false });
-
-//   return { accessToken, refreshToken };
-// };
 
 const generateAccessAndRefreshTokens = async (
   user,
@@ -630,99 +506,6 @@ const generateAccessAndRefreshTokens = async (
     refreshToken,
   };
 };
-
-export const selectLoginRole = async (req) => {
-  const { userId, roleId, companyId } = req.body;
-
-  if (!userId || !roleId || !companyId) {
-    throw new CustomError(
-      statusCodes?.badRequest,
-      "userId, roleId and companyId are required",
-      errorCodes?.invalid_credentials
-    );
-  }
-
-  // Verify that this exact role belongs to this user
-  const userRole = await UserRole.findOne({
-    userId,
-    roleId,
-    companyId,
-    Status: "active",
-  })
-    .populate("roleId")
-    .populate("companyId");
-
-  if (!userRole) {
-    throw new CustomError(
-      statusCodes?.forbidden,
-      "Invalid role or company selection",
-      errorCodes?.unauthorized
-    );
-  }
-
-  // Get the actual User
-  const user = await User.findOne({
-    _id: userId,
-    isDeleted: false,
-  });
-
-  if (!user) {
-    throw new CustomError(
-      statusCodes?.notFound,
-      "User account not found",
-      errorCodes?.not_found
-    );
-  }
-
-  const payload = {
-    userId: user._id,
-    email: user.email,
-    role: userRole.roleId.name,
-    roleId: userRole.roleId._id,
-    companyId: userRole.companyId._id,
-  };
-
-  const accessToken = jwt.sign(
-    payload,
-    process.env.ACCESS_TOKEN_SECRET,
-    {
-      expiresIn: process.env.ACCESS_TOKEN_EXPIRY,
-    }
-  );
-
-  const refreshToken = jwt.sign(
-    payload,
-    process.env.REFRESH_TOKEN_SECRET,
-    {
-      expiresIn: process.env.REFRESH_TOKEN_EXPIRY,
-    }
-  );
-
-  user.refreshToken = refreshToken;
-
-  await user.save({
-    validateBeforeSave: false,
-  });
-
-  return {
-    user: {
-      _id: user._id,
-      fullname: user.fullname,
-      email: user.email,
-    },
-    role: userRole.roleId.name,
-    roleId: userRole.roleId._id,
-    companyId: userRole.companyId._id,
-    accessToken,
-    refreshToken,
-    options: {
-      httpOnly: true,
-      secure: false,
-      sameSite: "strict",
-    },
-  };
-};
-
 export const getAllCompany = async (req) => {
   const AllComp = await Company.find({ isDeleted: false }).sort({
     createdAt: -1,
@@ -925,31 +708,4 @@ export const getTotalData = async (req) => {
 
   return formattedData;
 };
-
-// export const commentAndResolved = async (req, res) => {
-//   const companyId = req.query.id;
-//   if (!companyId) {
-//     throw new CustomError(
-//       statusCodes.badRequest,
-//       Message.missingId,
-//       errorCodes.missing_id
-//     );
-//   }
-
-//   const allComplain = await Complaint.find({ companyId, isDeleted: false })
-//     .populate("tenantId")
-//     .populate("propertyId", "propertyname")
-//     .sort({ createdAt: -1 })
-//     .lean();
-
-//   if (!allComplain) {
-//     throw new CustomError(
-//       statusCodes?.conflict,
-//       Message?.serverError,
-//       errorCodes?.conflict
-//     );
-//   }
-//   return allComplain;
-// };
-
 

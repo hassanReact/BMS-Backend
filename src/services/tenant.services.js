@@ -15,78 +15,6 @@ import User from "../models/user.model.js";
 import Role from "../models/role.model.js";
 import UserRole from "../models/userRole.model.js";
 
-// export const createTenant = async (req) => {   
-//   const {
-//     tenantName,
-//     email,
-//     password,
-//     phoneno,
-//     identityCardType,
-//     identityNo,
-//     address,
-//     reporterId,
-//     //accountName,
-//     companyId,
-//     documents,
-//   } = req.body;
-
-//   const [isCompanyAlreadyExist, isAgentAlreadyExist, isStudentAlreadyExist] =
-//     await Promise.all([
-//       Company.findOne({ email, isDeleted: false }),
-//       Agent.findOne({ email, isDeleted: false }),
-//       Tenant.findOne({ email, isDeleted: false }),
-//     ]);
-
-//   if (isCompanyAlreadyExist || isAgentAlreadyExist || isStudentAlreadyExist) {
-//     throw new CustomError(
-//       statusCodes?.conflict,
-//       Message?.alreadyExist,
-//       errorCodes?.already_exist
-//     );
-//   }
-
-//   const uploadedFiles = req.files.map((file) => ({
-//     filetype: file.mimetype,
-//     name: file.originalname,
-//     url: `uploads/tenant/${file.filename}`,
-//   }));
-
-//   const tenant = await Tenant.create({
-//     tenantName,
-//     email,
-//     password,
-//     phoneno,
-//     identityCardType,
-//     identityNo,
-//     files: uploadedFiles,
-//     address,
-//     reporterId,
-//     //accountName,
-//     companyId,
-//   });
-
-//   if (!tenant) {
-//     throw new CustomError(
-//       statusCodes?.serviceUnavailable,
-//       Message?.serverError,
-//       errorCodes?.service_unavailable
-//     );
-//   }
-
-//   const CompanyDetails = await Company.findById(companyId);
-//   if(CompanyDetails && process.env.FEATURE_EMAIL == 'on' && CompanyDetails.isMailStatus){
-//    await sendEmailToTenant(tenant,CompanyDetails);
-//   }
-//   if (CompanyDetails && process.env.FEATURE_WHATSAAP == 'on' && CompanyDetails.whatappStatus) {
-//   await sendWhatsAppMessage(tenant, CompanyDetails);
-//   }
-
-//   const createdTenant = await Tenant.findById(tenant._id).select(
-//     "-password -refreshToken"
-//   );
-
-//   return createdTenant;
-// };
 
 export const createTenant = async (req) => {
   const {
@@ -127,6 +55,14 @@ export const createTenant = async (req) => {
         isDeleted: false,
       }).session(session);
 
+      if(user){
+        throw new CustomError(
+          statusCodes?.conflict,
+          Message?.alreadyExist,
+          errorCodes?.already_exist
+        );
+      }
+
       // 3. Create User only if it doesn't exist
       if (!user) {
         const createdUsers = await User.create(
@@ -144,21 +80,6 @@ export const createTenant = async (req) => {
         user = createdUsers[0];
       }
 
-      // 4. Check whether this User is already Tenant
-      //    in this company
-      const existingUserRole = await UserRole.findOne({
-        userId: user._id,
-        roleId: tenantRole._id,
-        companyId,
-      }).session(session);
-
-      if (existingUserRole) {
-        throw new CustomError(
-          statusCodes?.conflict,
-          Message?.alreadyExist,
-          errorCodes?.already_exist
-        );
-      }
 
       // 5. Create UserRole
       await UserRole.create(

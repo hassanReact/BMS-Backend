@@ -12,48 +12,7 @@ import User from "../models/user.model.js";
 import Role from "../models/role.model.js";
 import UserRole from "../models/userRole.model.js";
 
-// export const createStaff = async (req, res) => {
-//   const { staffName, email, password, phoneNo, address, companyId, designation, salary, cnic } = req.body;
 
-//   const [isCompanyAlreadyExist, isstaffAlreadyExist, isStudentAlreadyExist] =
-//     await Promise.all([
-//       Company.findOne({ email, isDeleted: false }),
-//       staff.findOne({ email, isDeleted: false }),
-//       Tenant.findOne({ email, isDeleted: false }),
-//     ]);
-
-//   if (isCompanyAlreadyExist || isstaffAlreadyExist || isStudentAlreadyExist) {
-//     throw new CustomError(
-//       statusCodes?.conflict,
-//       Message?.alreadyExist,
-//       errorCodes?.already_exist
-//     );
-//   }
-
-
-//   const newStaff = await staff.create({
-//     staffName,
-//     email,
-//     password,
-//     phoneNo,
-//     address,
-//     companyId: companyId,
-//     designation,
-//     Salary: salary,
-//     cnic
-//   });
-
-//   const CompanyDetails = await Company.findById(companyId);
-
-//   if (CompanyDetails.isMailStatus) {
-//     await sendStaffRegistrationEmail(newStaff, CompanyDetails);
-//   }
-//   if (CompanyDetails.whatappStatus) {
-//     await sendWhatsAppMessage(newStaff, CompanyDetails);
-//   }
-
-//   return newStaff
-// }
 export const createStaff = async (req) => {
   const {
     staffName,
@@ -95,6 +54,14 @@ export const createStaff = async (req) => {
         isDeleted: false,
       }).session(session);
 
+      if(user){
+        throw new CustomError(
+          statusCodes?.conflict,
+          Message?.alreadyExist,
+          errorCodes?.already_exist
+        );
+      }
+
       // 3. Create User if it doesn't exist
       if (!user) {
         const createdUsers = await User.create(
@@ -110,22 +77,6 @@ export const createStaff = async (req) => {
         );
 
         user = createdUsers[0];
-      }
-
-      // 4. Check whether User already has Staff role
-      //    in this company
-      const existingUserRole = await UserRole.findOne({
-        userId: user._id,
-        roleId: staffRole._id,
-        companyId,
-      }).session(session);
-
-      if (existingUserRole) {
-        throw new CustomError(
-          statusCodes?.conflict,
-          Message?.alreadyExist,
-          errorCodes?.already_exist
-        );
       }
 
       // 5. Create UserRole

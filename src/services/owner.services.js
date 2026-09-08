@@ -11,42 +11,6 @@ import Role from "../models/role.model.js";
 import UserRole from "../models/userRole.model.js";
 import mongoose from "mongoose";
 
-// export const registerOwner = async (req, res) => {
-
-//   const { ownerName, email, password, phoneNo, address, companyId } = req.body;
-
-//   const isOwnerAlreadyExist = await Owner.findOne({ email, isDeleted: false } );
-
-//   if (isOwnerAlreadyExist) {
-//     throw new CustomError(
-//       statusCodes?.conflict,
-//       Message?.alreadyExist,
-//       errorCodes?.already_exist
-//     );
-//   }
-
-//   const owner = await Owner.create({
-//     ownerName,
-//     email,
-//     password,
-//     phoneNo,
-//     address,
-//     companyId: companyId,
-//   });
-
-//   const createdOwner = await Owner.findById(owner._id).select(
-//     "-password -refreshToken"
-//   );
-
-//   if (!createdOwner) {
-//     return new CustomError(
-//       statusCodes?.serviceUnavailable,
-//       Message?.serverError,
-//       errorCodes?.service_unavailable
-//     );
-//   }
-//   return createdOwner;
-// };
 
 export const registerOwner = async (req, res) => {
   const {
@@ -62,6 +26,7 @@ export const registerOwner = async (req, res) => {
 
   try {
     let createdOwner;
+    
 
     await session.withTransaction(async () => {
 
@@ -84,8 +49,16 @@ export const registerOwner = async (req, res) => {
         isDeleted: false,
       }).session(session);
 
+      if (user){
+        throw new CustomError(
+          statusCodes?.conflict,
+          Message?.alreadyExist,
+          errorCodes?.already_exist
+        );
+      }
+
       // 3. If User doesn't exist, create the User
-      if (!user) {
+      if (user) {
         const createdUsers = await User.create(
           [
             {
@@ -101,22 +74,6 @@ export const registerOwner = async (req, res) => {
         user = createdUsers[0];
       }
 
-      // 4. Check whether this User already has Owner
-      //    role in this company
-      const existingUserRole = await UserRole.findOne({
-        userId: user._id,
-        roleId: ownerRole._id,
-        companyId,
-      }).session(session);
-
-      if (existingUserRole) {
-        throw new CustomError(
-          statusCodes?.conflict,
-          Message?.alreadyExist,
-          errorCodes?.already_exist
-        );
-      }
-
       // 5. Create UserRole
       await UserRole.create(
         [
@@ -128,21 +85,6 @@ export const registerOwner = async (req, res) => {
         ],
         { session }
       );
-
-      // 6. Check if Owner profile already exists
-      const existingOwner = await Owner.findOne({
-        userId: user._id,
-        companyId,
-        isDeleted: false,
-      }).session(session);
-
-      if (existingOwner) {
-        throw new CustomError(
-          statusCodes?.conflict,
-          Message?.alreadyExist,
-          errorCodes?.already_exist
-        );
-      }
 
       // 7. Create Owner business profile
       const owner = await Owner.create(
@@ -163,9 +105,18 @@ export const registerOwner = async (req, res) => {
     });
 
     // 8. Return created Owner
-    return await Owner.findById(createdOwner._id).select(
+    const result = await Owner.findById(createdOwner._id).select(
       "-password -refreshToken"
     );
+
+   if(!result){
+    throw new CustomError(
+        statusCodes?.serviceUnavailable,
+        Message?.serverError,
+        errorCodes?.service_unavailable
+      ); 
+    }
+    return result;
 
   } finally {
     await session.endSession();
