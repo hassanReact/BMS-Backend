@@ -12,59 +12,6 @@ import User from "../models/user.model.js";
 import Role from "../models/role.model.js";
 import UserRole from "../models/userRole.model.js";
 
-// export const createAgent = async (req, res) => {
-//   const { agentName, email, password, phoneNo, address, companyId } = req.body;
-
-//   const [isCompanyAlreadyExist, isAgentAlreadyExist, isStudentAlreadyExist] =
-//     await Promise.all([
-//       Company.findOne({ email, isDeleted: false }),
-//       Agent.findOne({ email, isDeleted: false }),
-//       Tenant.findOne({ email, isDeleted: false }),
-//     ]);
-
-//   if (isCompanyAlreadyExist || isAgentAlreadyExist || isStudentAlreadyExist) {
-//     throw new CustomError(
-//       statusCodes?.conflict,
-//       Message?.alreadyExist,
-//       errorCodes?.already_exist
-//     );
-//   }
-
-//   // const isAgentAlreadyExist = await Agent.findOne({ email });
-//   // if (isAgentAlreadyExist) {
-//   //   throw new CustomError(
-//   //     statusCodes?.conflict,
-//   //     Message?.alreadyExist,
-//   //     errorCodes?.already_exist,
-//   //   );
-//   // }
-
-//   const newAgent = await Agent.create({
-//     agentName,
-//     email,
-//     password,
-//     phoneNo,
-//     address,
-//     companyId: companyId,
-//   });
-
-//     const CompanyDetails = await Company.findById(companyId);
-  
-//     if(CompanyDetails.isMailStatus){
-//       await sendAgentRegistrationEmail(newAgent,CompanyDetails);
-//     }
-//     if(CompanyDetails.whatappStatus){
-//       await sendWhatsAppMessage(newAgent, CompanyDetails);
-//       }
-
-//   return res.status(201).json({
-//     success: true,
-//     message: "Agent created successfully!",
-//     data: newAgent,
-//   });
-// };
-
-
 export const createAgent = async (req) => {
   const {
     agentName,
