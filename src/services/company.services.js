@@ -67,6 +67,127 @@ import jwt from "jsonwebtoken";
 //   return createdCompany;
 // };
 
+// export const companyRegistration = async (req) => {
+//   const {
+//     companyName,
+//     email,
+//     password,
+//     phoneNo,
+//     address,
+//     currencyCode,
+//     gstnumber,
+//   } = req.body;
+
+//   const normalizedEmail = email.toLowerCase().trim();
+
+//   const session = await mongoose.startSession();
+
+//   try {
+//     let createdCompany;
+
+//     await session.withTransaction(async () => {
+
+//       // 1. Check CompanyAdmin role
+//       const companyAdminRole = await Role.findOne({
+//         name: "CompanyAdmin",
+//       }).session(session);
+
+//       if (!companyAdminRole) {
+//         throw new CustomError(
+//           statusCodes?.notFound,
+//           "CompanyAdmin role not found",
+//           errorCodes?.not_found
+//         );
+//       }
+
+//       // 2. Check whether this email already has a User
+//       let user = await User.findOne({
+//         email: normalizedEmail,
+//         isDeleted: false,
+//       }).session(session);
+
+//       if (user) {
+//         throw new CustomError(
+//           statusCodes?.conflict,
+//           Message?.alreadyExist,
+//           errorCodes?.already_exist
+//         );
+//       }
+
+    
+
+//       // 3. Create User
+//       const users = await User.create(
+//         [
+//           {
+//             fullname: companyName,
+//             email: normalizedEmail,
+//             password,
+//             phoneNo,
+//             role: "CompanyAdmin",
+//           },
+//         ],
+//         { session }
+//       );
+
+//       user = users[0];
+
+      
+//       // 4. Create Company first
+//       const companies = await Company.create(
+//         [
+//           {
+//             companyName,
+//             email: normalizedEmail,
+//             password,
+//             phoneNo,
+//             address,
+//             currencyCode,
+//             gstnumber,
+//           },
+//         ],
+//         { session }
+//       );
+
+//       createdCompany = companies[0];
+
+//       // 5. Connect User → CompanyAdmin → Company
+//       await UserRole.create(
+//         [
+//           {
+//             userId: user._id,
+//             roleId: companyAdminRole._id,
+//             companyId: createdCompany._id,
+//           },
+//         ],
+//         { session }
+//       );
+
+//       // 6. Connect Company → User
+//       createdCompany.userId = user._id;
+//       await createdCompany.save({ session });
+//     });
+
+//     // Transaction committed successfully
+
+//     const result = await Company.findById(createdCompany._id)
+//       .select("-password -refreshToken");
+
+//     if (!result) {
+//       throw new CustomError(
+//         statusCodes?.serviceUnavailable,
+//         Message?.serverError,
+//         errorCodes?.service_unavailable
+//       );
+//     }
+
+//     return result;
+
+//   } finally {
+//     await session.endSession();
+//   }
+// };
+
 export const companyRegistration = async (req) => {
   const {
     companyName,
@@ -87,7 +208,7 @@ export const companyRegistration = async (req) => {
 
     await session.withTransaction(async () => {
 
-      // 1. Check CompanyAdmin role
+      // 1. Find CompanyAdmin role
       const companyAdminRole = await Role.findOne({
         name: "CompanyAdmin",
       }).session(session);
@@ -100,13 +221,13 @@ export const companyRegistration = async (req) => {
         );
       }
 
-      // 2. Check whether this email already has a User
-      let user = await User.findOne({
+      // 2. Check if email already exists
+      const existingUser = await User.findOne({
         email: normalizedEmail,
         isDeleted: false,
       }).session(session);
 
-      if (user) {
+      if (existingUser) {
         throw new CustomError(
           statusCodes?.conflict,
           Message?.alreadyExist,
@@ -114,10 +235,27 @@ export const companyRegistration = async (req) => {
         );
       }
 
-      // 3. Create Company first
+      // 3. Create User first
+      const users = await User.create(
+        [
+          {
+            fullname: companyName,
+            email: normalizedEmail,
+            password,
+            phoneNo,
+            role: "CompanyAdmin", // temporary legacy field
+          },
+        ],
+        { session }
+      );
+
+      const user = users[0];
+
+      // 4. Create Company with userId
       const companies = await Company.create(
         [
           {
+            userId: user._id,
             companyName,
             email: normalizedEmail,
             password,
@@ -132,23 +270,7 @@ export const companyRegistration = async (req) => {
 
       createdCompany = companies[0];
 
-      // 4. Create User
-      const users = await User.create(
-        [
-          {
-            fullname: companyName,
-            email: normalizedEmail,
-            password,
-            phoneNo,
-            role: "CompanyAdmin",
-          },
-        ],
-        { session }
-      );
-
-      user = users[0];
-
-      // 5. Connect User → CompanyAdmin → Company
+      // 5. Create UserRole
       await UserRole.create(
         [
           {
@@ -159,13 +281,7 @@ export const companyRegistration = async (req) => {
         ],
         { session }
       );
-
-      // 6. Connect Company → User
-      createdCompany.userId = user._id;
-      await createdCompany.save({ session });
     });
-
-    // Transaction committed successfully
 
     const result = await Company.findById(createdCompany._id)
       .select("-password -refreshToken");
