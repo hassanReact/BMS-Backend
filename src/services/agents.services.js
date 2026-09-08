@@ -103,6 +103,14 @@ export const createAgent = async (req) => {
         isDeleted: false,
       }).session(session);
 
+      if(user){
+        throw new CustomError(
+          statusCodes?.conflict,
+          Message?.alreadyExist,
+          errorCodes?.already_exist
+        );
+      }
+
       // 3. Create User if it doesn't exist
       if (!user) {
         const users = await User.create(
@@ -120,20 +128,6 @@ export const createAgent = async (req) => {
         user = users[0];
       }
 
-      // 4. Check Agent role for this company
-      const existingUserRole = await UserRole.findOne({
-        userId: user._id,
-        roleId: agentRole._id,
-        companyId,
-      }).session(session);
-
-      if (existingUserRole) {
-        throw new CustomError(
-          statusCodes?.conflict,
-          Message?.alreadyExist,
-          errorCodes?.already_exist
-        );
-      }
 
       // 5. Assign Agent role
       await UserRole.create(
