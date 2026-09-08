@@ -393,45 +393,28 @@ export const universalLogin = async (req) => {
   }
 
   // 3. Find all active roles of this user
-  const userRoles = await UserRole.find({
+  const userRoles = await UserRole.findOne({
     userId: user._id,
     Status: "active",
   })
     .populate("roleId")
     .populate("companyId");
 
-  if (!userRoles.length) {
+    if (!userRoles){
     throw new CustomError(
       statusCodes?.forbidden,
-      "No active role assigned to this account.",
+      "No active roles found for this user. Please contact administrator.",
       errorCodes?.unauthorized
     );
   }
 
-  // 4. For now, only handle one role
-  if (userRoles.length > 1) {
-    return {
-      requiresRoleSelection: true,
-      userId: user._id,
-      accounts: userRoles.map((item) => ({
-        roleId: item.roleId._id,
-        role: item.roleId.name,
-        companyId: item.companyId._id,
-        companyName: item.companyId.companyName,
-      })),
-    };
-  
-  }
-
-  const selectedRole = userRoles[0];
-
   // 5. Generate tokens
   const payload = {
-    userId: user._id,
+   userId: user._id,
     email: user.email,
-    role: selectedRole.roleId.name,
-    roleId: selectedRole.roleId._id,
-    companyId: selectedRole.companyId._id,
+    role: userRoles.roleId.name,
+    roleId: userRoles.roleId._id,
+    companyId: userRoles.companyId?._id || null,
   };
 
   const accessToken = jwt.sign(
@@ -472,15 +455,16 @@ export const universalLogin = async (req) => {
       email: user.email,
     },
 
-    role: selectedRole.roleId.name,
-    roleId: selectedRole.roleId._id,
-    companyId: selectedRole.companyId._id,
+    role: userRoles.roleId.name,
+    roleId: userRoles.roleId._id,
+    companyId: userRoles.companyId?._id || null,
 
     accessToken,
     refreshToken,
     options,
   };
 };
+
 
 // const generateAccessAndRefreshTokens = async (userId) => {
 //   const company = await Company.findById(userId);
@@ -576,97 +560,97 @@ const generateAccessAndRefreshTokens = async (
   };
 };
 
-export const selectLoginRole = async (req) => {
-  const { userId, roleId, companyId } = req.body;
+// export const selectLoginRole = async (req) => {
+//   const { userId, roleId, companyId } = req.body;
 
-  if (!userId || !roleId || !companyId) {
-    throw new CustomError(
-      statusCodes?.badRequest,
-      "userId, roleId and companyId are required",
-      errorCodes?.invalid_credentials
-    );
-  }
+//   if (!userId || !roleId || !companyId) {
+//     throw new CustomError(
+//       statusCodes?.badRequest,
+//       "userId, roleId and companyId are required",
+//       errorCodes?.invalid_credentials
+//     );
+//   }
 
-  // Verify that this exact role belongs to this user
-  const userRole = await UserRole.findOne({
-    userId,
-    roleId,
-    companyId,
-    Status: "active",
-  })
-    .populate("roleId")
-    .populate("companyId");
+//   // Verify that this exact role belongs to this user
+//   const userRole = await UserRole.findOne({
+//     userId,
+//     roleId,
+//     companyId,
+//     Status: "active",
+//   })
+//     .populate("roleId")
+//     .populate("companyId");
 
-  if (!userRole) {
-    throw new CustomError(
-      statusCodes?.forbidden,
-      "Invalid role or company selection",
-      errorCodes?.unauthorized
-    );
-  }
+//   if (!userRole) {
+//     throw new CustomError(
+//       statusCodes?.forbidden,
+//       "Invalid role or company selection",
+//       errorCodes?.unauthorized
+//     );
+//   }
 
-  // Get the actual User
-  const user = await User.findOne({
-    _id: userId,
-    isDeleted: false,
-  });
+//   // Get the actual User
+//   const user = await User.findOne({
+//     _id: userId,
+//     isDeleted: false,
+//   });
 
-  if (!user) {
-    throw new CustomError(
-      statusCodes?.notFound,
-      "User account not found",
-      errorCodes?.not_found
-    );
-  }
+//   if (!user) {
+//     throw new CustomError(
+//       statusCodes?.notFound,
+//       "User account not found",
+//       errorCodes?.not_found
+//     );
+//   }
 
-  const payload = {
-    userId: user._id,
-    email: user.email,
-    role: userRole.roleId.name,
-    roleId: userRole.roleId._id,
-    companyId: userRole.companyId._id,
-  };
+//   const payload = {
+//     userId: user._id,
+//     email: user.email,
+//     role: userRole.roleId.name,
+//     roleId: userRole.roleId._id,
+//     companyId: userRole.companyId._id,
+//   };
 
-  const accessToken = jwt.sign(
-    payload,
-    process.env.ACCESS_TOKEN_SECRET,
-    {
-      expiresIn: process.env.ACCESS_TOKEN_EXPIRY,
-    }
-  );
+//   const accessToken = jwt.sign(
+//     payload,
+//     process.env.ACCESS_TOKEN_SECRET,
+//     {
+//       expiresIn: process.env.ACCESS_TOKEN_EXPIRY,
+//     }
+//   );
 
-  const refreshToken = jwt.sign(
-    payload,
-    process.env.REFRESH_TOKEN_SECRET,
-    {
-      expiresIn: process.env.REFRESH_TOKEN_EXPIRY,
-    }
-  );
+//   const refreshToken = jwt.sign(
+//     payload,
+//     process.env.REFRESH_TOKEN_SECRET,
+//     {
+//       expiresIn: process.env.REFRESH_TOKEN_EXPIRY,
+//     }
+//   );
 
-  user.refreshToken = refreshToken;
+//   user.refreshToken = refreshToken;
 
-  await user.save({
-    validateBeforeSave: false,
-  });
+//   await user.save({
+//     validateBeforeSave: false,
+//   });
 
-  return {
-    user: {
-      _id: user._id,
-      fullname: user.fullname,
-      email: user.email,
-    },
-    role: userRole.roleId.name,
-    roleId: userRole.roleId._id,
-    companyId: userRole.companyId._id,
-    accessToken,
-    refreshToken,
-    options: {
-      httpOnly: true,
-      secure: false,
-      sameSite: "strict",
-    },
-  };
-};
+//   return {
+//     user: {
+//       _id: user._id,
+//       fullname: user.fullname,
+//       email: user.email,
+//     },
+//     role: userRole.roleId.name,
+//     roleId: userRole.roleId._id,
+//     companyId: userRole.companyId._id,
+//     accessToken,
+//     refreshToken,
+//     options: {
+//       httpOnly: true,
+//       secure: false,
+//       sameSite: "strict",
+//     },
+//   };
+// };
 
 export const getAllCompany = async (req) => {
   const AllComp = await Company.find({ isDeleted: false }).sort({
