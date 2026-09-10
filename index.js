@@ -39,6 +39,7 @@ import systemRoutes from './src/routes/system.routes.js'
 import { ensureSuperAdminExists } from './src/middlewares/ensureSuperAdmin.middleware.js'
 import generalVoucherRoutes from './src/routes/generalVoucher.routes.js'
 import unifiedVoucherRoutes from './src/routes/UnifiedVoucher.routes.js'
+import postgresPool from './src/core/database/postgres.js';
 
 const app = express();
 const PORT = (() => { 
@@ -66,6 +67,14 @@ connectDB()
     .catch((err) => {
         logger.error(`Database connection failed: ${err.message}`);
     });
+
+    try{
+        const result = await postgresPool.query('SELECT NOW()');
+        console.log(`Postgres connected successfully: ${result.rows[0].now}`);
+    
+    }catch(err){
+        console.error(`Postgres connection failed: ${err.message}`);
+    }
 
 app.use(responseInterceptor);
 
