@@ -8,21 +8,17 @@
     "dev": "npx nodemon index.js",
     "prettier": "npx prettier --write src",
     "test": "echo \"Error: no test specified\" && exit 1",
-
     "migrate": "node src/scripts/runMigration.js",
     "migrate:preview": "node src/scripts/runMigration.js --preview",
     "setup": "node scripts/setupDatabase.js",
     "setup:interactive": "node scripts/setupDatabase.js --interactive",
     "setup:admin": "node scripts/createSuperAdminInteractive.js",
     "Default-Roles": "node scripts/seedDefaultRoles.js",
-    
     "create-admin": "node scripts/createSuperAdmin.js",
     "create-admin:interactive": "node scripts/createSuperAdminInteractive.js",
     "create-admin:env": "node scripts/createSuperAdmin.js",
-    
     "db:migrate": "node scripts/setupDatabase.js",
     "db:setup": "node scripts/setupDatabase.js",
-    
     "postinstall": "npm run setup",
     "deploy:setup": "npm run setup && npm run create-admin:env"
   },
@@ -30,7 +26,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "bcrypt": "^5.1.1",
+    "bcrypt": "^6.0.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "crypto": "^1.0.1",
@@ -42,15 +38,21 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.8.4",
     "multer": "^1.4.5-lts.1",
-    "nodemailer": "^6.10.0",
+    "nodemailer": "^10.0.3",
     "nodemon": "^3.1.9",
     "path": "^0.12.7",
+    "pg": "^8.23.0",
     "stack-trace": "^1.0.0-pre2",
     "twilio": "^5.5.2",
+    "typeorm": "^1.1.1",
     "winston": "^3.17.0",
     "winston-daily-rotate-file": "^5.0.0"
   },
   "devDependencies": {
     "@types/mongoose": "^5.11.96"
+  },
+  "overrides": {
+    "qs": "^6.16.0",
+    "uuid": "^11.1.1"
   }
 }
