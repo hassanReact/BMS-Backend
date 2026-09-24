@@ -1,42 +1,105 @@
-import UnifiedVoucher from '../models/UnifiedVoucher.model.js';
-import mongoose from 'mongoose';
+import AppDataSource from "../core/database/data-source.js";
+import { In } from "typeorm";
+
+const unifiedVoucherRepository = AppDataSource.getRepository("UnifiedVoucher");
 
 /**
  * Unified Voucher Service
  * Provides business-friendly methods for all accounting operations
  */
 class UnifiedVoucherService {
-  
   /**
    * Create a new voucher
    */
+  normalizeAmountValue(amountValue) {
+    if (typeof amountValue === "number") {
+      return Number(amountValue || 0);
+    }
+
+    if (typeof amountValue === "string") {
+      const parsed = Number(amountValue);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    if (typeof amountValue === "object" && amountValue !== null) {
+      const candidate = Number(
+        amountValue.total ?? amountValue.balance ?? amountValue.paid ?? 0
+      );
+      return Number.isFinite(candidate) ? candidate : 0;
+    }
+
+    return 0;
+  }
+
+  calculateMaintenanceSurcharge(voucherData) {
+    if (voucherData.voucherType !== "MDN" || !voucherData.dueDate) {
+      return 0;
+    }
+
+    const dueDate = new Date(voucherData.dueDate);
+    const currentDate = new Date();
+    const daysPastDue = Math.max(
+      0,
+      Math.floor((currentDate - dueDate) / (1000 * 60 * 60 * 24))
+    );
+
+    if (daysPastDue <= 0) {
+      return 0;
+    }
+
+    return daysPastDue * 5;
+  }
+
+  applyLegacyPreSaveDefaults(voucherData) {
+    const amountValue = this.normalizeAmountValue(voucherData.amount);
+    const surchargeAmount = this.calculateMaintenanceSurcharge(voucherData);
+    const totalAmountOwed = Number(amountValue) + Number(surchargeAmount || 0);
+    const explicitOutstanding = this.normalizeAmountValue(
+      voucherData.outstandingAmount
+    );
+    const initialOutstandingAmount =
+      voucherData.outstandingAmount == null ||
+      explicitOutstanding === 0 ||
+      Number(explicitOutstanding) === Number(amountValue)
+        ? totalAmountOwed
+        : explicitOutstanding;
+
+    voucherData.amount = amountValue;
+    voucherData.surchargeAmount = surchargeAmount;
+    voucherData.totalAmountOwed = totalAmountOwed;
+    voucherData.outstandingAmount = initialOutstandingAmount;
+    voucherData.paymentStatus =
+      voucherData.paymentStatus ??
+      (["AR", "AP"].includes(voucherData.voucherType) ? "pending" : "paid");
+
+    return voucherData;
+  }
+
   async createVoucher(voucherData) {
     try {
-      // Generate voucher number if not provided
       if (!voucherData.voucherNo) {
         voucherData.voucherNo = await this.generateVoucherNumber(
-          voucherData.companyId, 
+          voucherData.companyId,
           voucherData.voucherType
         );
       }
 
-      // Validate double-entry accounting
+      this.applyLegacyPreSaveDefaults(voucherData);
       this.validateDoubleEntry(voucherData);
 
-      // Create voucher
-      const voucher = new UnifiedVoucher(voucherData);
-      await voucher.save();
+      const voucher = unifiedVoucherRepository.create(voucherData);
+      await unifiedVoucherRepository.save(voucher);
 
       return {
         success: true,
         data: voucher,
-        message: 'Voucher created successfully'
+        message: "Voucher created successfully",
       };
     } catch (error) {
       return {
         success: false,
         error: error.message,
-        message: 'Failed to create voucher'
+        message: "Failed to create voucher",
       };
     }
   }
@@ -45,48 +108,35 @@ class UnifiedVoucherService {
    * Create Accounts Receivable voucher
    */
   async createMaintenanceReceivable(data) {
+    const voucherData = {
+      voucherType: "AR",
+      companyId: data.companyId,
+      date: data.date || new Date(),
+      month: data.month || new Date().toISOString().slice(0, 7),
+      particulars: `Maintenance - ${data.propertyName || "Property"}`,
+      debit: {
+        accountId: data.customerId,
+        accountType: "Customer",
+        accountName: data.customerName,
+      },
+      credit: {
+        accountId: data.companyId,
+        accountType: "Company",
+        accountName: "Company",
+      },
+      amount: data.amount,
+      dueDate: data.dueDate || this.calculateDueDate(30),
+      propertyId: data.propertyId,
+      propertyName: data.propertyName,
+      sourceDocument: {
+        referenceId: data.maintenanceId,
+        referenceModel: "Maintenance",
+      },
+      tags: ["Maintenance", "AR"],
+      status: "approved",
+    };
 
-    console.log(data);
-
-    // try {
-      const voucherData = {
-        voucherType: 'AR',
-        companyId: data.companyId,
-        date: data.date || new Date(),
-        month: data.month || new Date().toISOString().slice(0, 7),
-        particulars: `Maintenance - ${data.propertyName || 'Property'}`,
-        debit: {
-          accountId: data.customerId,
-          accountType: 'Customer',
-          accountName: data.customerName
-        },
-        credit: {
-          accountId: data.companyId,
-          accountType: 'Company',
-          accountName: 'Company'
-        },
-        amount: data.amount,
-        dueDate: data.dueDate || this.calculateDueDate(30),
-        propertyId: data.propertyId,
-        propertyName: data.propertyName,
-        sourceDocument: {
-          referenceId: data.maintenanceId,
-          referenceModel: 'Maintenance'
-        },
-        tags: ['Maintenance', 'AR'],
-        status: 'approved'
-      };
-
-      const result = await this.createVoucher(voucherData);
-      console.log(result);
-      return result;
-    // } catch (error) {
-    //   return {
-    //     success: false,
-    //     error: error.message,
-    //     message: 'Failed to create maintenance receivable'
-    //   };
-    // }
+    return this.createVoucher(voucherData);
   }
 
   /**
@@ -95,29 +145,29 @@ class UnifiedVoucherService {
   async createVendorPayable(data) {
     try {
       const voucherData = {
-        voucherType: 'AP',
+        voucherType: "AP",
         companyId: data.companyId,
         date: data.date || new Date(),
         month: data.month || new Date().toISOString().slice(0, 7),
         particulars: `Vendor Payment - ${data.vendorName}`,
         debit: {
           accountId: data.companyId,
-          accountType: 'Company',
-          accountName: 'Company'
+          accountType: "Company",
+          accountName: "Company",
         },
         credit: {
           accountId: data.vendorId,
-          accountType: 'Vendor',
-          accountName: data.vendorName
+          accountType: "Vendor",
+          accountName: data.vendorName,
         },
         amount: data.amount,
         dueDate: data.dueDate || this.calculateDueDate(30),
         sourceDocument: {
           referenceId: data.purchaseId,
-          referenceModel: 'PurchaseDetails'
+          referenceModel: "PurchaseDetails",
         },
-        tags: ['Vendor', 'AP'],
-        status: 'approved'
+        tags: ["Vendor", "AP"],
+        status: "approved",
       };
 
       return await this.createVoucher(voucherData);
@@ -125,7 +175,7 @@ class UnifiedVoucherService {
       return {
         success: false,
         error: error.message,
-        message: 'Failed to create vendor payable'
+        message: "Failed to create vendor payable",
       };
     }
   }
@@ -137,36 +187,54 @@ class UnifiedVoucherService {
     try {
       const { voucherId, paymentAmount, paymentDate, paymentMethod } = data;
 
-      // Get the original voucher
-      const originalVoucher = await UnifiedVoucher.findById(voucherId);
+      const originalVoucher = await unifiedVoucherRepository.findOne({
+        where: { id: voucherId },
+      });
       if (!originalVoucher) {
-        throw new Error('Original voucher not found');
+        throw new Error("Original voucher not found");
       }
 
-      if (!['AR', 'AP'].includes(originalVoucher.voucherType)) {
-        throw new Error('Can only record payments against AR or AP vouchers');
+      if (!["AR", "AP"].includes(originalVoucher.voucherType)) {
+        throw new Error("Can only record payments against AR or AP vouchers");
       }
 
-      // Create payment voucher
       const paymentVoucherData = {
-        voucherType: originalVoucher.voucherType === 'AR' ? 'REC' : 'PAY',
+        voucherType: originalVoucher.voucherType === "AR" ? "REC" : "PAY",
         companyId: originalVoucher.companyId,
         date: paymentDate || new Date(),
         month: new Date().toISOString().slice(0, 7),
         particulars: `Payment against ${originalVoucher.voucherNo}`,
-        debit: originalVoucher.voucherType === 'AR' ? 
-          { accountId: originalVoucher.companyId, accountType: 'Company', accountName: 'Company' } :
-          { accountId: originalVoucher.credit.accountId, accountType: originalVoucher.credit.accountType, accountName: originalVoucher.credit.accountName },
-        credit: originalVoucher.voucherType === 'AR' ? 
-          { accountId: originalVoucher.debit.accountId, accountType: originalVoucher.debit.accountType, accountName: originalVoucher.debit.accountName } :
-          { accountId: originalVoucher.companyId, accountType: 'Company', accountName: 'Company' },
+        debit:
+          originalVoucher.voucherType === "AR"
+            ? {
+                accountId: originalVoucher.companyId,
+                accountType: "Company",
+                accountName: "Company",
+              }
+            : {
+                accountId: originalVoucher.credit?.accountId,
+                accountType: originalVoucher.credit?.accountType,
+                accountName: originalVoucher.credit?.accountName,
+              },
+        credit:
+          originalVoucher.voucherType === "AR"
+            ? {
+                accountId: originalVoucher.debit?.accountId,
+                accountType: originalVoucher.debit?.accountType,
+                accountName: originalVoucher.debit?.accountName,
+              }
+            : {
+                accountId: originalVoucher.companyId,
+                accountType: "Company",
+                accountName: "Company",
+              },
         amount: paymentAmount,
         sourceDocument: {
-          referenceId: originalVoucher._id,
-          referenceModel: 'UnifiedVoucher'
+          referenceId: originalVoucher.id,
+          referenceModel: "UnifiedVoucher",
         },
-        tags: ['Payment', originalVoucher.voucherType === 'AR' ? 'REC' : 'PAY'],
-        status: 'approved'
+        tags: ["Payment", originalVoucher.voucherType === "AR" ? "REC" : "PAY"],
+        status: "approved",
       };
 
       const paymentResult = await this.createVoucher(paymentVoucherData);
@@ -174,39 +242,44 @@ class UnifiedVoucherService {
         throw new Error(paymentResult.error);
       }
 
-      // Update original voucher
       const paymentVoucher = paymentResult.data;
-      const newOutstandingAmount = Math.max(0, originalVoucher.outstandingAmount - paymentAmount);
-      
-      // Update outstanding amount and payment status
+      const currentOutstanding = Number(originalVoucher.outstandingAmount || 0);
+      const newOutstandingAmount = Math.max(0, currentOutstanding - Number(paymentAmount));
+      const linkedVouchers = Array.isArray(originalVoucher.linkedVouchers)
+        ? originalVoucher.linkedVouchers
+        : [];
+
       const updateData = {
         outstandingAmount: newOutstandingAmount,
-        paymentStatus: newOutstandingAmount === 0 ? 'paid' : 'partial',
+        paymentStatus: newOutstandingAmount === 0 ? "paid" : "partial",
         linkedVouchers: [
-          ...originalVoucher.linkedVouchers,
+          ...linkedVouchers,
           {
-            voucherId: paymentVoucher._id,
+            voucherId: paymentVoucher.id,
             amount: paymentAmount,
-            date: paymentDate || new Date()
-          }
-        ]
+            date: paymentDate || new Date(),
+          },
+        ],
       };
 
-      await UnifiedVoucher.findByIdAndUpdate(voucherId, updateData);
+      Object.assign(originalVoucher, updateData);
+      await unifiedVoucherRepository.save(originalVoucher);
 
       return {
         success: true,
         data: {
-          originalVoucher: await UnifiedVoucher.findById(voucherId),
-          paymentVoucher: paymentVoucher
+          originalVoucher: await unifiedVoucherRepository.findOne({
+            where: { id: voucherId },
+          }),
+          paymentVoucher,
         },
-        message: 'Payment recorded successfully'
+        message: "Payment recorded successfully",
       };
     } catch (error) {
       return {
         success: false,
         error: error.message,
-        message: 'Failed to record payment'
+        message: "Failed to record payment",
       };
     }
   }
@@ -216,35 +289,35 @@ class UnifiedVoucherService {
    */
   async getAccountsReceivable(companyId, filters = {}) {
     try {
-      const query = {
-        companyId,
-        voucherType: 'AR',
-        paymentStatus: { $in: ['pending', 'partial', 'overdue'] },
-        isDeleted: false,
-        ...filters
-      };
+      const vouchers = await unifiedVoucherRepository.find({
+        where: {
+          companyId,
+          voucherType: "AR",
+          paymentStatus: In(["pending", "partial", "overdue"]),
+          isDeleted: false,
+          ...filters,
+        },
+        order: { dueDate: "ASC" },
+      });
 
-      const vouchers = await UnifiedVoucher.find(query)
-        .populate('debit.accountId')
-        .populate('credit.accountId')
-        .populate('propertyId')
-        .sort({ dueDate: 1 });
-
-      const totalOutstanding = vouchers.reduce((sum, v) => sum + v.outstandingAmount, 0);
+      const totalOutstanding = vouchers.reduce(
+        (sum, v) => sum + Number(v.outstandingAmount || 0),
+        0
+      );
 
       return {
         success: true,
         data: {
           vouchers,
           totalOutstanding,
-          count: vouchers.length
-        }
+          count: vouchers.length,
+        },
       };
     } catch (error) {
       return {
         success: false,
         error: error.message,
-        message: 'Failed to get accounts receivable'
+        message: "Failed to get accounts receivable",
       };
     }
   }
@@ -254,34 +327,35 @@ class UnifiedVoucherService {
    */
   async getAccountsPayable(companyId, filters = {}) {
     try {
-      const query = {
-        companyId,
-        voucherType: 'AP',
-        paymentStatus: { $in: ['pending', 'partial', 'overdue'] },
-        isDeleted: false,
-        ...filters
-      };
+      const vouchers = await unifiedVoucherRepository.find({
+        where: {
+          companyId,
+          voucherType: "AP",
+          paymentStatus: In(["pending", "partial", "overdue"]),
+          isDeleted: false,
+          ...filters,
+        },
+        order: { dueDate: "ASC" },
+      });
 
-      const vouchers = await UnifiedVoucher.find(query)
-        .populate('debit.accountId')
-        .populate('credit.accountId')
-        .sort({ dueDate: 1 });
-
-      const totalOutstanding = vouchers.reduce((sum, v) => sum + v.outstandingAmount, 0);
+      const totalOutstanding = vouchers.reduce(
+        (sum, v) => sum + Number(v.outstandingAmount || 0),
+        0
+      );
 
       return {
         success: true,
         data: {
           vouchers,
           totalOutstanding,
-          count: vouchers.length
-        }
+          count: vouchers.length,
+        },
       };
     } catch (error) {
       return {
         success: false,
         error: error.message,
-        message: 'Failed to get accounts payable'
+        message: "Failed to get accounts payable",
       };
     }
   }
@@ -291,35 +365,32 @@ class UnifiedVoucherService {
    */
   async getMaintenanceServices(companyId, filters = {}) {
     try {
-      const query = {
-        companyId,
-        voucherType: 'MDN',
-        tags: { $in: ['Maintenance'] },
-        isDeleted: false,
-        ...filters
-      };
+      const vouchers = await unifiedVoucherRepository.find({
+        where: {
+          companyId,
+          voucherType: "MDN",
+          tags: In(["Maintenance"]),
+          isDeleted: false,
+          ...filters,
+        },
+        order: { date: "DESC" },
+      });
 
-      const vouchers = await UnifiedVoucher.find(query)
-        .populate('debit.accountId')
-        .populate('credit.accountId')
-        .populate('propertyId')
-        .sort({ date: -1 });
-
-      const totalRevenue = vouchers.reduce((sum, v) => sum + v.amount, 0);
+      const totalRevenue = vouchers.reduce((sum, v) => sum + Number(v.amount || 0), 0);
 
       return {
         success: true,
         data: {
           vouchers,
           totalRevenue,
-          count: vouchers.length
-        }
+          count: vouchers.length,
+        },
       };
     } catch (error) {
       return {
         success: false,
         error: error.message,
-        message: 'Failed to get maintenance services'
+        message: "Failed to get maintenance services",
       };
     }
   }
@@ -329,50 +400,45 @@ class UnifiedVoucherService {
    */
   async generateLedger(accountId, accountType, companyId, filters = {}) {
     try {
-      const pipeline = [
-        {
-          $match: {
-            companyId: mongoose.Types.ObjectId(companyId),
-            $or: [
-              { 'debit.accountId': mongoose.Types.ObjectId(accountId), 'debit.accountType': accountType },
-              { 'credit.accountId': mongoose.Types.ObjectId(accountId), 'credit.accountType': accountType }
-            ],
-            isDeleted: false,
-            ...filters
-          }
-        },
-        {
-          $addFields: {
-            isDebit: {
-              $eq: ['$debit.accountId', mongoose.Types.ObjectId(accountId)]
-            },
-            entryType: {
-              $cond: [
-                { $eq: ['$debit.accountId', mongoose.Types.ObjectId(accountId)] },
-                'Debit',
-                'Credit'
-              ]
-            }
-          }
-        },
-        {
-          $sort: { date: 1 }
+      const queryBuilder = unifiedVoucherRepository
+        .createQueryBuilder("voucher")
+        .where("voucher.companyId = :companyId", { companyId })
+        .andWhere("voucher.isDeleted = :isDeleted", { isDeleted: false })
+        .andWhere(
+          "((voucher.debit ->> 'accountId' = :accountId AND voucher.debit ->> 'accountType' = :accountType) OR (voucher.credit ->> 'accountId' = :accountId AND voucher.credit ->> 'accountType' = :accountType))",
+          { accountId: String(accountId), accountType }
+        )
+        .orderBy("voucher.date", "ASC");
+
+      Object.entries(filters || {}).forEach(([key, value]) => {
+        if (value === undefined || value === null) return;
+        if (Array.isArray(value)) {
+          queryBuilder.andWhere(`voucher.${key} IN (:...${key})`, { [key]: value });
+          return;
         }
-      ];
+        queryBuilder.andWhere(`voucher.${key} = :${key}`, { [key]: value });
+      });
 
-      const ledger = await UnifiedVoucher.aggregate(pipeline);
+      const ledger = await queryBuilder.getMany();
 
-      // Calculate running balance
       let balance = 0;
-      const ledgerWithBalance = ledger.map(entry => {
-        if (entry.isDebit) {
-          balance += entry.amount;
+      const ledgerWithBalance = ledger.map((entry) => {
+        const isDebit =
+          String(entry.debit?.accountId ?? "") === String(accountId) &&
+          String(entry.debit?.accountType ?? "") === String(accountType);
+        const amount = Number(entry.amount || 0);
+
+        if (isDebit) {
+          balance += amount;
         } else {
-          balance -= entry.amount;
+          balance -= amount;
         }
+
         return {
           ...entry,
-          runningBalance: balance
+          isDebit,
+          entryType: isDebit ? "Debit" : "Credit",
+          runningBalance: balance,
         };
       });
 
@@ -382,14 +448,14 @@ class UnifiedVoucherService {
           ledger: ledgerWithBalance,
           finalBalance: balance,
           accountId,
-          accountType
-        }
+          accountType,
+        },
       };
     } catch (error) {
       return {
         success: false,
         error: error.message,
-        message: 'Failed to generate ledger'
+        message: "Failed to generate ledger",
       };
     }
   }
@@ -397,20 +463,64 @@ class UnifiedVoucherService {
   /**
    * Generate aging report
    */
-  async generateAgingReport(companyId, voucherType = 'AR') {
+  async generateAgingReport(companyId, voucherType = "AR") {
     try {
-      const agingReport = await UnifiedVoucher.getAgingReport(companyId, voucherType);
-      
+      const rows = await AppDataSource.manager.query(
+        `
+          SELECT
+            CASE
+              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 0 THEN 'Not Due'
+              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 30 THEN '0-30 days'
+              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 60 THEN '31-60 days'
+              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 90 THEN '61-90 days'
+              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 120 THEN '91-120 days'
+              ELSE 'Over 120 days'
+            END AS "ageRange",
+            COUNT(*)::int AS count,
+            COALESCE(SUM(CAST(outstanding_amount AS numeric)), 0) AS "totalAmount"
+          FROM unified_vouchers
+          WHERE company_id = $1
+            AND voucher_type = $2
+            AND payment_status IN ('pending', 'partial', 'overdue')
+            AND is_deleted = false
+          GROUP BY
+            CASE
+              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 0 THEN 'Not Due'
+              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 30 THEN '0-30 days'
+              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 60 THEN '31-60 days'
+              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 90 THEN '61-90 days'
+              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 120 THEN '91-120 days'
+              ELSE 'Over 120 days'
+            END
+          ORDER BY
+            CASE
+              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 0 THEN 1
+              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 30 THEN 2
+              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 60 THEN 3
+              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 90 THEN 4
+              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 120 THEN 5
+              ELSE 6
+            END;
+        `,
+        [companyId, voucherType]
+      );
+
+      const agingReport = rows.map((row) => ({
+        _id: { ageRange: row.ageRange },
+        count: Number(row.count),
+        totalAmount: Number(row.totalAmount || 0),
+      }));
+
       return {
         success: true,
         data: agingReport,
-        voucherType
+        voucherType,
       };
     } catch (error) {
       return {
         success: false,
         error: error.message,
-        message: 'Failed to generate aging report'
+        message: "Failed to generate aging report",
       };
     }
   }
@@ -420,18 +530,37 @@ class UnifiedVoucherService {
    */
   async generateMonthlySummary(companyId, month) {
     try {
-      const summary = await UnifiedVoucher.getMonthlySummary(companyId, month);
-      
+      const rows = await AppDataSource.manager.query(
+        `
+          SELECT
+            voucher_type AS "_id",
+            COUNT(*)::int AS count,
+            COALESCE(SUM(CAST(amount AS numeric)), 0) AS "totalAmount"
+          FROM unified_vouchers
+          WHERE company_id = $1
+            AND month = $2
+            AND is_deleted = false
+          GROUP BY voucher_type;
+        `,
+        [companyId, month]
+      );
+
+      const summary = rows.map((row) => ({
+        _id: row._id,
+        count: Number(row.count),
+        totalAmount: Number(row.totalAmount || 0),
+      }));
+
       return {
         success: true,
         data: summary,
-        month
+        month,
       };
     } catch (error) {
       return {
         success: false,
         error: error.message,
-        message: 'Failed to generate monthly summary'
+        message: "Failed to generate monthly summary",
       };
     }
   }
@@ -441,21 +570,54 @@ class UnifiedVoucherService {
    */
   async getOutstandingBalance(accountId, accountType, companyId) {
     try {
-      const balance = await UnifiedVoucher.getOutstandingBalance(accountId, accountType, companyId);
-      
+      const [row] = await AppDataSource.manager.query(
+        `
+          SELECT
+            COALESCE(
+              SUM(
+                CASE
+                  WHEN debit ->> 'accountId' = $1 AND debit ->> 'accountType' = $2 THEN CAST(amount AS numeric)
+                  ELSE 0
+                END
+              ),
+              0
+            ) AS "totalDebit",
+            COALESCE(
+              SUM(
+                CASE
+                  WHEN credit ->> 'accountId' = $1 AND credit ->> 'accountType' = $2 THEN CAST(amount AS numeric)
+                  ELSE 0
+                END
+              ),
+              0
+            ) AS "totalCredit"
+          FROM unified_vouchers
+          WHERE company_id = $3
+            AND is_deleted = false
+            AND (
+              (debit ->> 'accountId' = $1 AND debit ->> 'accountType' = $2)
+              OR
+              (credit ->> 'accountId' = $1 AND credit ->> 'accountType' = $2)
+            );
+        `,
+        [String(accountId), accountType, companyId]
+      );
+
+      const balance = Number(row.totalDebit || 0) - Number(row.totalCredit || 0);
+
       return {
         success: true,
         data: {
           accountId,
           accountType,
-          balance
-        }
+          balance,
+        },
       };
     } catch (error) {
       return {
         success: false,
         error: error.message,
-        message: 'Failed to get outstanding balance'
+        message: "Failed to get outstanding balance",
       };
     }
   }
@@ -465,71 +627,66 @@ class UnifiedVoucherService {
    */
   async generateTrialBalance(companyId, month) {
     try {
-      const pipeline = [
-        {
-          $match: {
-            companyId: mongoose.Types.ObjectId(companyId),
-            month: month,
-            isDeleted: false
-          }
-        },
-        {
-          $group: {
-            _id: {
-              accountId: '$debit.accountId',
-              accountType: '$debit.accountType',
-              accountName: '$debit.accountName'
-            },
-            totalDebit: { $sum: '$amount' }
-          }
-        },
-        {
-          $unionWith: {
-            coll: 'unifiedvouchers',
-            pipeline: [
-              {
-                $match: {
-                  companyId: mongoose.Types.ObjectId(companyId),
-                  month: month,
-                  isDeleted: false
-                }
-              },
-              {
-                $group: {
-                  _id: {
-                    accountId: '$credit.accountId',
-                    accountType: '$credit.accountType',
-                    accountName: '$credit.accountName'
-                  },
-                  totalCredit: { $sum: '$amount' }
-                }
-              }
-            ]
-          }
-        },
-        {
-          $group: {
-            _id: {
-              accountId: '$_id.accountId',
-              accountType: '$_id.accountType',
-              accountName: '$_id.accountName'
-            },
-            totalDebit: { $sum: { $ifNull: ['$totalDebit', 0] } },
-            totalCredit: { $sum: { $ifNull: ['$totalCredit', 0] } }
-          }
-        },
-        {
-          $addFields: {
-            balance: { $subtract: ['$totalDebit', '$totalCredit'] }
-          }
-        },
-        {
-          $sort: { '_id.accountType': 1, '_id.accountName': 1 }
-        }
-      ];
+      const rows = await AppDataSource.manager.query(
+        `
+          WITH account_totals AS (
+            SELECT
+              (debit ->> 'accountId') AS "accountId",
+              (debit ->> 'accountType') AS "accountType",
+              (debit ->> 'accountName') AS "accountName",
+              SUM(CAST(amount AS numeric)) AS "totalDebit",
+              0::numeric AS "totalCredit"
+            FROM unified_vouchers
+            WHERE company_id = $1
+              AND month = $2
+              AND is_deleted = false
+            GROUP BY
+              (debit ->> 'accountId'),
+              (debit ->> 'accountType'),
+              (debit ->> 'accountName')
 
-      const trialBalance = await UnifiedVoucher.aggregate(pipeline);
-      
+            UNION ALL
+
+            SELECT
+              (credit ->> 'accountId') AS "accountId",
+              (credit ->> 'accountType') AS "accountType",
+              (credit ->> 'accountName') AS "accountName",
+              0::numeric AS "totalDebit",
+              SUM(CAST(amount AS numeric)) AS "totalCredit"
+            FROM unified_vouchers
+            WHERE company_id = $1
+              AND month = $2
+              AND is_deleted = false
+            GROUP BY
+              (credit ->> 'accountId'),
+              (credit ->> 'accountType'),
+              (credit ->> 'accountName')
+          )
+          SELECT
+            "accountId",
+            "accountType",
+            "accountName",
+            COALESCE(SUM("totalDebit"), 0)::numeric AS "totalDebit",
+            COALESCE(SUM("totalCredit"), 0)::numeric AS "totalCredit"
+          FROM account_totals
+          GROUP BY "accountId", "accountType", "accountName"
+          ORDER BY "accountType" ASC, "accountName" ASC;
+        `,
+        [companyId, month]
+      );
+
+      const trialBalance = rows.map((account) => ({
+        _id: {
+          accountId: account.accountId,
+          accountType: account.accountType,
+          accountName: account.accountName,
+        },
+        totalDebit: Number(account.totalDebit || 0),
+        totalCredit: Number(account.totalCredit || 0),
+        balance:
+          Number(account.totalDebit || 0) - Number(account.totalCredit || 0),
+      }));
+
       const totalDebits = trialBalance.reduce((sum, account) => sum + account.totalDebit, 0);
       const totalCredits = trialBalance.reduce((sum, account) => sum + account.totalCredit, 0);
 
@@ -539,14 +696,14 @@ class UnifiedVoucherService {
           trialBalance,
           totalDebits,
           totalCredits,
-          month
-        }
+          month,
+        },
       };
     } catch (error) {
       return {
         success: false,
         error: error.message,
-        message: 'Failed to generate trial balance'
+        message: "Failed to generate trial balance",
       };
     }
   }
@@ -558,19 +715,20 @@ class UnifiedVoucherService {
     try {
       const today = new Date();
       const year = today.getFullYear();
-      const month = String(today.getMonth() + 1).padStart(2, '0');
-      
-      // Get count for this month
-      const count = await UnifiedVoucher.countDocuments({
-        companyId,
-        voucherType,
-        month: `${year}-${month}`,
-        isDeleted: false
+      const month = String(today.getMonth() + 1).padStart(2, "0");
+
+      const count = await unifiedVoucherRepository.count({
+        where: {
+          companyId,
+          voucherType,
+          month: `${year}-${month}`,
+          isDeleted: false,
+        },
       });
 
-      return `${voucherType}-${year}${month}-${String(count + 1).padStart(4, '0')}`;
+      return `${voucherType}-${year}${month}-${String(count + 1).padStart(4, "0")}`;
     } catch (error) {
-      throw new Error('Failed to generate voucher number');
+      throw new Error("Failed to generate voucher number");
     }
   }
 
@@ -579,15 +737,15 @@ class UnifiedVoucherService {
    */
   validateDoubleEntry(voucherData) {
     if (!voucherData.debit || !voucherData.credit) {
-      throw new Error('Both debit and credit entries are required');
+      throw new Error("Both debit and credit entries are required");
     }
-    
+
     if (!voucherData.debit.accountId || !voucherData.credit.accountId) {
-      throw new Error('Account IDs are required for both debit and credit');
+      throw new Error("Account IDs are required for both debit and credit");
     }
-    
+
     if (voucherData.debit.accountId.toString() === voucherData.credit.accountId.toString()) {
-      throw new Error('Debit and credit cannot be the same account');
+      throw new Error("Debit and credit cannot be the same account");
     }
   }
 

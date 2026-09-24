@@ -1,26 +1,31 @@
-import mongoose from "mongoose";
-import { errorCodes, statusCodes } from "../core/common/constant.js";
-import AccountsReceivable from "../models/accountsReceiveable.model.js";
+import AppDataSource from "../core/database/data-source.js";
+import { In, MoreThan } from "typeorm";
+import { errorCodes, Message, statusCodes } from "../core/common/constant.js";
 import CustomError from "../utils/exception.js";
-import Vendor from "../models/vendor.model.js";
-import TransactionalAccounts from "../models/transactionalAccounts.model.js";
-import staff from "../models/staff.model.js";
-import Property from "../models/property.model.js";
-import ServiceProvider from "../models/serviceprovider.model.js";
-import UnifiedVoucher from "../models/UnifiedVoucher.model.js";
-import Bill from "../models/billing.model.js";
+
+const accountsReceivableRepository = AppDataSource.getRepository("AccountsReceivable");
+const accountVoucherRepository = AppDataSource.getRepository("AccountVoucher");
+const billRepository = AppDataSource.getRepository("Bill");
+const propertyRepository = AppDataSource.getRepository("Property");
+const unifiedVoucherRepository = AppDataSource.getRepository("UnifiedVoucher");
+const vendorRepository = AppDataSource.getRepository("Vendor");
+const transactionalAccountRepository = AppDataSource.getRepository("TranstionalAccounts");
+const staffRepository = AppDataSource.getRepository("Staff");
+const serviceProviderRepository = AppDataSource.getRepository("ServiceProvider");
 
 export const getAllReceives = async (req, res) => {
     const companyId = req.query.companyId;
 
-    const data = await UnifiedVoucher.find({
-        companyId,
-        isDeleted: false,
-        voucherType: { $in: ['MDN', 'PU'] },
-        "amount.balance" : { $gt : 0 },
-        status: 'pending',
-        paymentStatus: { $in : ['pending', 'partial', 'partial-paid', 'overdue']}
-    }).populate('sourceDocument.referenceId credit.accountId debit.accountId');
+    const data = await unifiedVoucherRepository.find({
+        where: {
+            companyId,
+            isDeleted: false,
+            voucherType: In(['MDN', 'PU']),
+            outstandingAmount: MoreThan(0),
+            status: 'pending',
+            paymentStatus: In(['pending', 'partial', 'overdue'])
+        }
+    });
 
     if (!data) {
         throw new CustomError(
@@ -35,6 +40,22 @@ export const getAllReceives = async (req, res) => {
 
 export const postVoucher = async (req, res) => {
     try {
+        const {
+            voucherNo,
+            voucherType,
+            companyId,
+            date,
+            month,
+            particulars,
+            debit,
+            credit,
+            amount,
+            propertyId,
+            TransactionId,
+            Details,
+            status
+        } = req.body;
+
         // Generate voucherNo if not provided
         let finalVoucherNo = voucherNo;
         if (!voucherNo) {
@@ -49,13 +70,9 @@ export const postVoucher = async (req, res) => {
             // const voucherPrefix = finalVoucherNo.replace(/[^a-zA-Z]/g, '');
 
             // Update the maintenance record status to paid
-            const update = await UnifiedVoucher.findOne(
-                {
-                    _id,
-                    companyId,
-                    isDeleted: false
-                }
-            );
+            const update = await unifiedVoucherRepository.findOne({
+                where: { id: _id, companyId, isDeleted: false }
+            });
 
 
             if (!update) {
@@ -68,52 +85,50 @@ export const postVoucher = async (req, res) => {
             }
             
             // Ensure amount values are valid numbers
-            const currentTotal = Number(update.amount?.total) || 0;
-            const currentPaid = Number(update.amount?.paid) || 0;
+            const currentTotal = Number(update.amount) || 0;
+            const currentOutstanding = Number(update.outstandingAmount ?? currentTotal) || 0;
             const paymentAmount = Number(amount) || 0;
-            
-            const newPendingAmount = currentTotal - (currentPaid + paymentAmount);
-            const newPaidAmount = currentPaid + paymentAmount;
+
+            const newPendingAmount = currentOutstanding - paymentAmount;
             
             let paymentStatus;
             let voucherStatus;
             if (newPendingAmount <= 0) {
                 paymentStatus = 'paid';
                 voucherStatus = 'approved'
-            } else if (newPaidAmount > 0 && newPendingAmount > 0) {
-                paymentStatus = 'partial-paid';
+            } else if (paymentAmount > 0 && newPendingAmount > 0) {
+                paymentStatus = 'partial';
                 voucherStatus = 'pending'
             } else {
                 paymentStatus = 'pending';
                 voucherStatus = 'pending'
             }
 
-            const updateData = {
-                'amount.balance': Math.max(0, newPendingAmount),
-                'amount.paid': newPaidAmount,
-                paymentStatus: paymentStatus,
-                status: voucherStatus
-            };
-
-            await UnifiedVoucher.updateOne(
-                { _id: update._id },
-                { $set: updateData }
-            );
-            // Update property maintenance history
-            await Property.updateOne(
+            await unifiedVoucherRepository.update(
+                { id: update.id, companyId, isDeleted: false },
                 {
-                    _id: propertyId,
-                    "maintencanceHistory.voucherId": _id
-                },
-                {
-                    $set: {
-                        "maintencanceHistory.$.status": "Paid"
-                    }
+                    outstandingAmount: Math.max(0, newPendingAmount),
+                    lastPaymentAmount: paymentAmount,
+                    lastPaymentDate: date || new Date(),
+                    paymentStatus,
+                    status: voucherStatus
                 }
             );
+            // Update property maintenance history
+            const property = await propertyRepository.findOne({
+                where: { id: propertyId }
+            });
+            if (property?.maintencanceHistory) {
+                property.maintencanceHistory = property.maintencanceHistory.map((history) =>
+                    String(history.voucherId) === String(_id)
+                        ? { ...history, status: "Paid" }
+                        : history
+                );
+                await propertyRepository.save(property);
+            }
 
             // Create payment voucher
-            const data = await UnifiedVoucher.create({
+            const data = unifiedVoucherRepository.create({
                 voucherNo: finalVoucherNo,
                 voucherType: 'MDN', // Receipt voucher
                 companyId,
@@ -130,11 +145,9 @@ export const postVoucher = async (req, res) => {
                     accountType: 'Property',
                     accountName: 'Property Account'
                 },
-                amount: {
-                    balance: 0,
-                    total: paymentAmount,
-                    paid: paymentAmount
-                },
+                amount: paymentAmount,
+                outstandingAmount: 0,
+                totalAmountOwed: paymentAmount,
                 propertyId: propertyId,
                 sourceDocument: {
                     referenceId: _id,
@@ -145,6 +158,7 @@ export const postVoucher = async (req, res) => {
                 tags: ['Payment', 'Maintenance', 'Receipt'],
                 details: Details || `Payment received for maintenance service`
             });
+            await unifiedVoucherRepository.save(data);
 
             if (!data) {
                 throw new CustomError(
@@ -177,7 +191,17 @@ export const postVoucher = async (req, res) => {
             if (req.body.sourceDocument) voucherData.sourceDocument = req.body.sourceDocument;
             if (req.body.propertyName) voucherData.propertyName = req.body.propertyName;
 
-            const data = await UnifiedVoucher.create(voucherData);
+            if (typeof amount !== 'number' || !Number.isFinite(amount)) {
+                throw new CustomError(400, 'Invalid amount provided', 'invalid_amount');
+            }
+
+            voucherData.amount = amount;
+            voucherData.outstandingAmount = amount;
+            voucherData.totalAmountOwed = amount;
+            voucherData.paymentStatus = 'pending';
+
+            const data = unifiedVoucherRepository.create(voucherData);
+            await unifiedVoucherRepository.save(data);
 
             if (!data) {
                 throw new CustomError(
@@ -247,20 +271,20 @@ export const postBillVoucher = async (req, res) => {
 
         // Update AccountsReceivable status to Paid
         console.log("Updating AccountsReceivable status to Paid for billId:", billId);
-        const updatedReceivable = await AccountsReceivable.updateOne(
+        const updatedReceivable = await accountsReceivableRepository.update(
             queryConditions,
-            {
-                status: "Paid"
-            }
+            { status: "Paid" }
         );
         console.log("AccountsReceivable update result:", updatedReceivable);
 
         if (updatedReceivable.matchedCount === 0) {
             // Check what records exist for debugging
-            const existingRecord = await AccountsReceivable.findOne({
-                referenceId: billId,
-                companyId,
-                isDeleted: false
+            const existingRecord = await accountsReceivableRepository.findOne({
+                where: {
+                    referenceId: billId,
+                    companyId,
+                    isDeleted: false
+                }
             });
             console.error("No pending bill found for the given criteria", {
                 billId, companyId, existingRecord
@@ -269,11 +293,13 @@ export const postBillVoucher = async (req, res) => {
             // Handle the case where bill is already paid
             if (existingRecord && existingRecord.status === 'Paid') {
                 // Check if voucher already exists for this bill
-                const existingVoucher = await AccountsVoucher.findOne({
-                    referenceId: billId,
-                    models: 'Bill',
-                    companyId,
-                    isDeleted: false
+                const existingVoucher = await accountVoucherRepository.findOne({
+                    where: {
+                        referenceId: billId,
+                        models: 'Bill',
+                        companyId,
+                        isDeleted: false
+                    }
                 });
                 
                 if (existingVoucher) {
@@ -297,7 +323,7 @@ export const postBillVoucher = async (req, res) => {
 
         // Create AccountsVoucher entry - EXACTLY like postVoucher
         console.log("Creating AccountsVoucher entry...");
-        const voucherData = await AccountsVoucher.create({
+        const voucherData = accountVoucherRepository.create({
             voucherNo,
             voucherType: voucherPrefix || 'REC',
             referenceId: billId,
@@ -308,7 +334,6 @@ export const postBillVoucher = async (req, res) => {
             details: normalizedDetails || 'Bill payment received',
             particulars: 'Bill Received',
             status: 'approved',
-            createdBy,
             // SAME PATTERN AS postVoucher
             credit: {
                 referenceId: propertyId,
@@ -320,6 +345,7 @@ export const postBillVoucher = async (req, res) => {
             },
             isDeleted: false
         });
+        await accountVoucherRepository.save(voucherData);
         console.log("AccountsVoucher created:", voucherData);
 
         if (!voucherData) {
@@ -334,13 +360,9 @@ export const postBillVoucher = async (req, res) => {
         // Update the Bill status as well
         console.log("Updating Bill status to Paid for billId:", billId);
         try {
-            await Bill.updateOne(
-                { _id: billId },
-                { 
-                    status: true, // or whatever your Bill model expects
-                    paidDate: new Date(normalizedDate),
-                    paidAmount: parseFloat(amount)
-                }
+            await billRepository.update(
+                { id: billId },
+                { status: true }
             );
             console.log("Bill status updated successfully");
         } catch (billUpdateError) {
@@ -369,37 +391,23 @@ export const getLedgerReport = async (req, res) => {
 
         console.log('Ledger query params:', { companyId, modelType, modelId, fromDate, toDate });
 
-        // Convert modelId to ObjectId if it's a valid ObjectId string
-        const objectModelId = mongoose.Types.ObjectId.isValid(modelId) ?
-            new mongoose.Types.ObjectId(modelId) : modelId;
-
-        const modelMatch = {
-            $or: [
-                { "debit.accountType": modelType, "debit.accountId": objectModelId },
-                { "credit.accountType": modelType, "credit.accountId": objectModelId },
-            ],
-        };
-
-        const baseMatch = { companyId, isDeleted: false };
-
         // Helper function to get debit and credit amounts from voucher
         const getVoucherAmounts = (voucher) => {
             let debitAmt = 0;
             let creditAmt = 0;
 
-            // Get the paid amount from voucher (prioritize amount.paid)
-            const paidAmount = voucher.amount?.paid || voucher.amount || 0;
+            const transactionAmount = Number(voucher.amount) || 0;
 
             // Check if this voucher affects our target model as debit
             if (voucher.debit?.accountType === modelType &&
                 voucher.debit?.accountId?.toString() === modelId) {
-                debitAmt = paidAmount;
+                debitAmt = transactionAmount;
             }
 
             // Check if this voucher affects our target model as credit
             if (voucher.credit?.accountType === modelType &&
                 voucher.credit?.accountId?.toString() === modelId) {
-                creditAmt = paidAmount;
+                creditAmt = transactionAmount;
             }
 
             return { debitAmt, creditAmt };
@@ -408,11 +416,13 @@ export const getLedgerReport = async (req, res) => {
         // 1. Calculate opening balance (before fromDate)
         let openingBalance = 0;
         if (fromDate) {
-            const openingEntries = await UnifiedVoucher.find({
-                ...baseMatch,
-                ...modelMatch,
-                date: { $lt: new Date(fromDate) },
-            });
+            const openingEntries = await unifiedVoucherRepository
+                .createQueryBuilder("voucher")
+                .where("voucher.company_id = :companyId", { companyId })
+                .andWhere("voucher.is_deleted = false")
+                .andWhere("((voucher.debit->>'accountType' = :modelType AND voucher.debit->>'accountId' = :modelId) OR (voucher.credit->>'accountType' = :modelType AND voucher.credit->>'accountId' = :modelId))", { modelType, modelId })
+                .andWhere("voucher.date < :fromDate", { fromDate: new Date(fromDate) })
+                .getMany();
 
             openingEntries.forEach((voucher) => {
                 const { debitAmt, creditAmt } = getVoucherAmounts(voucher);
@@ -421,20 +431,21 @@ export const getLedgerReport = async (req, res) => {
         }
 
         // 2. Fetch vouchers in date range
-        const dateMatch = {};
-        if (fromDate) dateMatch.$gte = new Date(fromDate);
-        if (toDate) dateMatch.$lte = new Date(toDate);
+        const finalQuery = unifiedVoucherRepository
+            .createQueryBuilder("voucher")
+            .where("voucher.company_id = :companyId", { companyId })
+            .andWhere("voucher.is_deleted = false")
+            .andWhere("((voucher.debit->>'accountType' = :modelType AND voucher.debit->>'accountId' = :modelId) OR (voucher.credit->>'accountType' = :modelType AND voucher.credit->>'accountId' = :modelId))", { modelType, modelId })
+            .orderBy("voucher.date", "ASC");
 
-        const finalQuery = {
-            ...baseMatch,
-            ...modelMatch,
-            ...(fromDate || toDate ? { date: dateMatch } : {}),
-        };
+        if (fromDate) {
+            finalQuery.andWhere("voucher.date >= :fromDate", { fromDate: new Date(fromDate) });
+        }
+        if (toDate) {
+            finalQuery.andWhere("voucher.date <= :toDate", { toDate: new Date(toDate) });
+        }
 
-        console.log('Final query:', JSON.stringify(finalQuery, null, 2));
-
-        const vouchers = await UnifiedVoucher.find(finalQuery)
-            .sort({ date: 1 });
+        const vouchers = await finalQuery.getMany();
 
         console.log(`Found ${vouchers.length} vouchers for ledger`);
 
@@ -469,7 +480,7 @@ export const getLedgerReport = async (req, res) => {
                 balance: runningBalance,
                 details: voucher.details || "",
                 voucherNo: voucher.voucherNo || "",
-                voucherId: voucher._id || null,
+                voucherId: voucher.id || null,
                 voucherType: voucher.voucherType,
                 isReversed: voucher.voucherType === 'REV', // Flag for reversed entries
                 sourceDocument: voucher.sourceDocument
@@ -517,72 +528,25 @@ export const getAccountBalance = async (req, res) => {
     }
 
     try {
-        const pipeline = [
-            {
-                $match: {
-                    companyId: new mongoose.Types.ObjectId(companyId),
-                    $or: [
-                        {
-                            'credit.accountId': new mongoose.Types.ObjectId(accountId),
-                            'credit.accountType': accountType
-                        },
-                        {
-                            'debit.accountId': new mongoose.Types.ObjectId(accountId),
-                            'debit.accountType': accountType
-                        }
-                    ]
-                }
-            },
-            {
-                $group: {
-                    _id: null,
-                    totalCredit: {
-                        $sum: {
-                            $cond: {
-                                if: {
-                                    $and: [
-                                        { $eq: ['$credit.accountId', new mongoose.Types.ObjectId(accountId)] },
-                                        { $eq: ['$credit.accountType', accountType] }
-                                    ]
-                                },
-                                then: '$amount',
-                                else: 0
-                            }
-                        }
-                    },
-                    totalDebit: {
-                        $sum: {
-                            $cond: {
-                                if: {
-                                    $and: [
-                                        { $eq: ['$debit.accountId', new mongoose.Types.ObjectId(accountId)] },
-                                        { $eq: ['$debit.accountType', accountType] }
-                                    ]
-                                },
-                                then: '$amount',
-                                else: 0
-                            }
-                        }
-                    },
-                    transactionCount: { $sum: 1 }
-                }
-            },
-            {
-                $addFields: {
-                    balance: { $subtract: ['$totalDebit', '$totalCredit'] },
-                    balanceType: {
-                        $cond: {
-                            if: { $gte: [{ $subtract: ['$totalDebit', '$totalCredit'] }, 0] },
-                            then: 'Debit',
-                            else: 'Credit'
-                        }
-                    }
-                }
-            }
-        ];
+        const balanceData = await unifiedVoucherRepository
+            .createQueryBuilder("voucher")
+            .select("COALESCE(SUM(CASE WHEN voucher.credit->>'accountId' = :accountId AND voucher.credit->>'accountType' = :accountType THEN voucher.amount ELSE 0 END), 0)", "totalCredit")
+            .addSelect("COALESCE(SUM(CASE WHEN voucher.debit->>'accountId' = :accountId AND voucher.debit->>'accountType' = :accountType THEN voucher.amount ELSE 0 END), 0)", "totalDebit")
+            .addSelect("COUNT(*)", "transactionCount")
+            .where("voucher.company_id = :companyId", { companyId })
+            .andWhere("((voucher.credit->>'accountId' = :accountId AND voucher.credit->>'accountType' = :accountType) OR (voucher.debit->>'accountId' = :accountId AND voucher.debit->>'accountType' = :accountType))", { accountId, accountType })
+            .getRawOne();
 
-        const result = await UnifiedVoucher.aggregate(pipeline);
-        const balanceData = result[0] || {
+        const totalCredit = Number(balanceData?.totalCredit || 0);
+        const totalDebit = Number(balanceData?.totalDebit || 0);
+        const balance = totalDebit - totalCredit;
+        const normalizedBalanceData = balanceData ? {
+            totalCredit,
+            totalDebit,
+            balance,
+            balanceType: balance >= 0 ? 'Debit' : 'Credit',
+            transactionCount: Number(balanceData.transactionCount || 0)
+        } : {
             totalCredit: 0,
             totalDebit: 0,
             balance: 0,
@@ -593,8 +557,8 @@ export const getAccountBalance = async (req, res) => {
         res.status(200).json({
             success: true,
             data: {
-                ...balanceData,
-                balance: Math.abs(balanceData.balance) // Return absolute value
+                ...normalizedBalanceData,
+                balance: Math.abs(normalizedBalanceData.balance)
             },
             message: 'Account balance fetched successfully'
         });
@@ -613,58 +577,29 @@ export const getAccountsSummary = async (req, res) => {
     const { companyId, accountType } = req.query;
 
     try {
-        const matchConditions = {
-            ...(companyId ? { companyId: new mongoose.Types.ObjectId(companyId) } : {})
-        };
+        const query = unifiedVoucherRepository
+            .createQueryBuilder("voucher")
+            .select("COALESCE(SUM(voucher.amount), 0)", "totalAmount")
+            .addSelect("COUNT(*)", "totalTransactions")
+            .addSelect("COALESCE(SUM(CASE WHEN voucher.credit->>'accountId' IS NOT NULL THEN voucher.amount ELSE 0 END), 0)", "totalCredit")
+            .addSelect("COALESCE(SUM(CASE WHEN voucher.debit->>'accountId' IS NOT NULL THEN voucher.amount ELSE 0 END), 0)", "totalDebit")
+            .addSelect("ARRAY_AGG(DISTINCT voucher.voucher_type)", "voucherTypes");
 
-        // Filter by account type if provided
-        let accountFilter = {};
+        if (companyId) {
+            query.where("voucher.company_id = :companyId", { companyId });
+        }
         if (accountType) {
-            accountFilter = {
-                $or: [
-                    { 'credit.accountType': accountType },
-                    { 'debit.accountType': accountType }
-                ]
-            };
+            query.andWhere("(voucher.credit->>'accountType' = :accountType OR voucher.debit->>'accountType' = :accountType)", { accountType });
         }
 
-        const pipeline = [
-            {
-                $match: {
-                    ...matchConditions,
-                    ...accountFilter
-                }
-            },
-            {
-                $group: {
-                    _id: null,
-                    totalAmount: { $sum: '$amount' },
-                    totalTransactions: { $sum: 1 },
-                    totalCredit: {
-                        $sum: {
-                            $cond: {
-                                if: { $ne: ['$credit.accountId', null] },
-                                then: '$amount',
-                                else: 0
-                            }
-                        }
-                    },
-                    totalDebit: {
-                        $sum: {
-                            $cond: {
-                                if: { $ne: ['$debit.accountId', null] },
-                                then: '$amount',
-                                else: 0
-                            }
-                        }
-                    },
-                    voucherTypes: { $addToSet: '$voucherType' }
-                }
-            }
-        ];
-
-        const result = await UnifiedVoucher.aggregate(pipeline);
-        const summary = result[0] || {
+        const result = await query.getRawOne();
+        const summary = result ? {
+            totalAmount: Number(result.totalAmount),
+            totalTransactions: Number(result.totalTransactions),
+            totalCredit: Number(result.totalCredit),
+            totalDebit: Number(result.totalDebit),
+            voucherTypes: result.voucherTypes || []
+        } : {
             totalAmount: 0,
             totalTransactions: 0,
             totalCredit: 0,
@@ -692,91 +627,17 @@ export const getTransactionDetails = async (req, res) => {
     const { voucherId } = req.params;
 
     try {
-        const pipeline = [
-            {
-                $match: {
-                    _id: new mongoose.Types.ObjectId(voucherId)
-                }
-            },
-            // Lookup for Credit Account Details
-            {
-                $lookup: {
-                    from: 'properties',
-                    localField: 'credit.accountId',
-                    foreignField: '_id',
-                    as: 'creditProperty'
-                }
-            },
-            {
-                $lookup: {
-                    from: 'transactionalaccounts',
-                    localField: 'credit.accountId',
-                    foreignField: '_id',
-                    as: 'creditTransaction'
-                }
-            },
-            // Lookup for Debit Account Details
-            {
-                $lookup: {
-                    from: 'properties',
-                    localField: 'debit.accountId',
-                    foreignField: '_id',
-                    as: 'debitProperty'
-                }
-            },
-            {
-                $lookup: {
-                    from: 'transactionalaccounts',
-                    localField: 'debit.accountId',
-                    foreignField: '_id',
-                    as: 'debitTransaction'
-                }
-            },
-            {
-                $addFields: {
-                    creditAccountDetails: {
-                        $cond: {
-                            if: { $eq: ['$credit.accountType', 'Property'] },
-                            then: { $arrayElemAt: ['$creditProperty', 0] },
-                            else: {
-                                $cond: {
-                                    if: { $eq: ['$credit.accountType', 'Account'] },
-                                    then: { $arrayElemAt: ['$creditTransaction', 0] },
-                                    else: null
-                                }
-                            }
-                        }
-                    },
-                    debitAccountDetails: {
-                        $cond: {
-                            if: { $eq: ['$debit.accountType', 'Property'] },
-                            then: { $arrayElemAt: ['$debitProperty', 0] },
-                            else: {
-                                $cond: {
-                                    if: { $eq: ['$debit.accountType', 'Account'] },
-                                    then: { $arrayElemAt: ['$debitTransaction', 0] },
-                                    else: 0
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        ];
+        const voucherWithPopulatedRef = await unifiedVoucherRepository.findOne({
+            where: { id: voucherId }
+        });
 
-        const result = await UnifiedVoucher.aggregate(pipeline);
-
-        if (!result || result.length === 0) {
+        if (!voucherWithPopulatedRef) {
             throw new CustomError(
                 statusCodes?.notFound,
                 'Transaction not found',
                 errorCodes?.not_found
             );
         }
-
-        // Populate the sourceDocument.referenceId after aggregation
-        const voucherWithPopulatedRef = await UnifiedVoucher.findById(voucherId)
-            .populate('sourceDocument.referenceId');
 
         res.status(200).json({
             success: true,
@@ -797,38 +658,53 @@ export const getTransactionDetails = async (req, res) => {
 export const vendors = async (req, res) => {
     const companyId = req.query.companyId;
 
-    const vendor = await Vendor.find({ companyId, isDeleted: false }).select('_id vendorName');
+    const vendor = await vendorRepository.find({
+        select: { id: true, vendorName: true },
+        where: { companyId, isDeleted: false }
+    });
 
-    return vendor
+    return vendor.map(({ id, vendorName }) => ({ _id: id, vendorName }));
 }
 
 export const properties = async (req, res) => {
     const companyId = req.query.companyId;
 
-    const properties = await Property.find({ companyId, isDeleted: false }).select('_id propertyname');
+    const properties = await propertyRepository.find({
+        select: { id: true, propertyname: true },
+        where: { companyId, isDeleted: false }
+    });
 
-    return properties
+    return properties.map(({ id, propertyname }) => ({ _id: id, propertyname }));
 }
 
 export const Staff = async (req, res) => {
     const companyId = req.query.companyId;
 
-    const staffs = await staff.find({ companyId, isDeleted: false }).select('_id staffName');
+    const staffs = await staffRepository.find({
+        select: { id: true, staffName: true },
+        where: { companyId, isDeleted: false }
+    });
 
-    return staffs
+    return staffs.map(({ id, staffName }) => ({ _id: id, staffName }));
 }
 
 export const service = async (req, res) => {
     const companyId = req.query.companyId;
-    const ServiceProviders = await ServiceProvider.find({ isDeleted: false, companyId }).select('_id name');
+    const ServiceProviders = await serviceProviderRepository.find({
+        select: { id: true, name: true },
+        where: { isDeleted: false, companyId }
+    });
     console.log(ServiceProviders);
-    return ServiceProviders;
+    return ServiceProviders.map(({ id, name }) => ({ _id: id, name }));
 }
 
 export const TransactionalsAccount = async (req, res) => {
     const companyId = req.query.companyId;
-    const Accounts = await TransactionalAccounts.find({ companyId, isDeleted: false }).select('_id accountName accountNumber');
-    return Accounts;
+    const Accounts = await transactionalAccountRepository.find({
+        select: { id: true, accountName: true, accountNumber: true },
+        where: { companyId, isDeleted: false }
+    });
+    return Accounts.map(({ id, accountName, accountNumber }) => ({ _id: id, accountName, accountNumber }));
 }
 
 // Reverse a voucher entry
@@ -837,7 +713,9 @@ export const reverseVoucher = async (req, res) => {
 
     try {
         // Find the original voucher
-        const originalVoucher = await UnifiedVoucher.findById(voucherId);
+        const originalVoucher = await unifiedVoucherRepository.findOne({
+            where: { id: voucherId }
+        });
 
         if (!originalVoucher) {
             throw new CustomError(
@@ -859,7 +737,9 @@ export const reverseVoucher = async (req, res) => {
         const reverseVoucherNo = `REV-${originalVoucher.voucherNo}`;
 
         // Check if reverse voucher already exists
-        const existingReverse = await UnifiedVoucher.findOne({ voucherNo: reverseVoucherNo });
+        const existingReverse = await unifiedVoucherRepository.findOne({
+            where: { voucherNo: reverseVoucherNo }
+        });
         if (existingReverse) {
             throw new CustomError(
                 statusCodes?.badRequest,
@@ -868,56 +748,12 @@ export const reverseVoucher = async (req, res) => {
             );
         }
 
-        // Create reverse voucher with swapped debit/credit
-        const reverseVoucher = await UnifiedVoucher.create({
-            voucherNo: reverseVoucherNo,
-            voucherType: 'REV', // Reverse voucher type
-            companyId: originalVoucher.companyId,
-            date: new Date(),
-            month: new Date().toISOString().slice(0, 7),
-            particulars: `Reverse of ${originalVoucher.particulars}`,
-            // Swap debit and credit to reverse the effect
-            credit: {
-                accountId: originalVoucher.debit.accountId,
-                accountType: originalVoucher.debit.accountType,
-                accountName: originalVoucher.debit.accountName
-            },
-            debit: {
-                accountId: originalVoucher.credit.accountId,
-                accountType: originalVoucher.credit.accountType,
-                accountName: originalVoucher.credit.accountName
-            },
-            amount: originalVoucher.amount,
-            propertyId: originalVoucher.propertyId,
-            propertyName: originalVoucher.propertyName,
-            status: 'approved',
-            tags: ['Reverse', 'Voucher'],
-            details: `Reverse entry: ${reason || 'No reason provided'}. Original voucher: ${originalVoucher.voucherNo}`,
-            isDeleted: false
-        });
-
-        // Update AccountsReceivable status back to Pending if this was a maintenance payment
-        if (originalVoucher.tags && originalVoucher.tags.includes('Maintenance')) {
-            // Find and update maintenance vouchers
-            await UnifiedVoucher.updateMany(
-                {
-                    companyId: originalVoucher.companyId,
-                    tags: { $in: ['Maintenance'] },
-                    status: "approved",
-                    isDeleted: false
-                },
-                { status: "pending" }
-            );
-        }
-
-        return {
-            success: true,
-            data: {
-                originalVoucher,
-                reverseVoucher
-            },
-            message: 'Voucher reversed successfully'
-        };
+        // REV is not supported by the current UnifiedVoucher PostgreSQL enum.
+        throw new CustomError(
+            statusCodes?.badRequest,
+            'Reverse voucher type is not supported',
+            errorCodes?.bad_request
+        );
 
     } catch (error) {
         console.error('reverseVoucher error:', error);

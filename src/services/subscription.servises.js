@@ -1,8 +1,10 @@
 
-import  Subscription from "../models/subscription.model.js";
+import AppDataSource from "../core/database/data-source.js";
 import { errorCodes, Message, statusCodes } from "../core/common/constant.js";
 import CustomError from "../utils/exception.js";
-import Transaction from "../models/transaction.model.js";
+
+const subscriptionRepository = AppDataSource.getRepository("Subscription");
+const transactionRepository = AppDataSource.getRepository("Transaction");
 
 export const createSubscription = async (req, res) => {
 
@@ -14,13 +16,14 @@ export const createSubscription = async (req, res) => {
       discription
     } = req.body;
 
-    const subscription = await Subscription.create({
+    const subscription = subscriptionRepository.create({
       title,
       noOfDays,
       amount,
       discount,
       discription
     });
+    await subscriptionRepository.save(subscription);
 
     if (!subscription) {
       throw new CustomError(
@@ -60,11 +63,10 @@ export const editSubscriptions = async (req, res) => {
       discount,
       discription
     };
-    const updatedSubscription = await Subscription.findByIdAndUpdate(
-      SubscriptionId,
-      updateData,
-      { new: true, runValidators: true }
-    );
+    const subscription = await subscriptionRepository.findOne({ where: { id: SubscriptionId } });
+    const updatedSubscription = subscription
+      ? await subscriptionRepository.save(Object.assign(subscription, updateData))
+      : null;
 
     if (!updatedSubscription) {
       throw new CustomError(
@@ -83,7 +85,7 @@ export const editSubscriptions = async (req, res) => {
 export const deleteSubscriptions = async (req, res) => {
   const SubscriptionId = req.query.id;
 
-  const SubscriptionData = await Subscription.findById(SubscriptionId);
+  const SubscriptionData = await subscriptionRepository.findOne({ where: { id: SubscriptionId } });
   if (!SubscriptionData) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -93,16 +95,19 @@ export const deleteSubscriptions = async (req, res) => {
   } 
 
   SubscriptionData.isDeleted = true;
-  await SubscriptionData.save();
+  await subscriptionRepository.save(SubscriptionData);
 
   return SubscriptionData
 };
 
 export const getAllSubscriptions = async (req, res) => {
 
-  const subscription = await Subscription.find({
-    isDeleted: false,
-  }).sort({ createdAt: -1 });
+  const subscription = await subscriptionRepository.find({
+    where: {
+      isDeleted: false,
+    },
+    order: { createdAt: "DESC" },
+  });
 
   if (!subscription) {
     throw new CustomError(
@@ -118,10 +123,11 @@ export const getSubTransaction = async (req, res) => {
 
   const companyId = req.query.id;
  
-  const transaction = await Transaction.find({companyId:companyId})
-  .populate("companyId")
-  .populate("subscriptionId")
-  .sort({ createdAt: -1 });
+  const transaction = await transactionRepository.find({
+    where: { companyId: companyId },
+    relations: ["company", "subscription"],
+    order: { createdAt: "DESC" },
+  });
 
   if (!transaction) {
     throw new CustomError(
@@ -136,10 +142,10 @@ export const getSubTransaction = async (req, res) => {
 export const getAllSubTransaction = async (req, res) => {
 
 
-  const transaction = await Transaction.find()
-  .populate("companyId")
-  .populate("subscriptionId")
-  .sort({ createdAt: -1 });
+  const transaction = await transactionRepository.find({
+    relations: ["company", "subscription"],
+    order: { createdAt: "DESC" },
+  });
 
   if (!transaction) {
     throw new CustomError(

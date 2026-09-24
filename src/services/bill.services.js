@@ -1,6 +1,5 @@
-import Bill from "../models/billing.model.js";
-import Property from "../models/property.model.js";
-import Tenant from "../models/tenant.model.js";
+import AppDataSource from "../core/database/data-source.js";
+import { Between, In } from "typeorm";
 import {
   errorCodes,
   invoicePrefix,
@@ -8,16 +7,17 @@ import {
   statusCodes,
 } from "../core/common/constant.js";
 import CustomError from "../utils/exception.js";
-import crypto from "crypto";
 import { sendEmail } from "../core/helpers/mail.js"
-import Agent from "../models/agents.model.js";
-import Company from "../models/company.model.js";
-import mongoose from 'mongoose';
-import { type } from "os";
-import AccountsReceivable from "../models/accountsReceiveable.model.js";
-import AccountsVoucher from "../models/accountsVoucher.model.js";
-import UnifiedVoucher from "../models/UnifiedVoucher.model.js";
 import ExcelJS from 'exceljs';
+
+const billRepository = AppDataSource.getRepository("Bill");
+const propertyRepository = AppDataSource.getRepository("Property");
+const tenantRepository = AppDataSource.getRepository("Tenant");
+const agentRepository = AppDataSource.getRepository("Agent");
+const companyRepository = AppDataSource.getRepository("Company");
+const accountsReceivableRepository = AppDataSource.getRepository("AccountsReceivable");
+const accountVoucherRepository = AppDataSource.getRepository("AccountVoucher");
+const unifiedVoucherRepository = AppDataSource.getRepository("UnifiedVoucher");
 
 export const createbill = async (req, res) => {
   const {
@@ -61,7 +61,9 @@ export const createbill = async (req, res) => {
       invoiceNo = `${prefix}${year}${formattedBillingMonth}${randomNumbers}`;
 
       // Check if this voucher number already exists
-      const existingVoucher = await UnifiedVoucher.findOne({ voucherNo: invoiceNo });
+      const existingVoucher = await unifiedVoucherRepository.findOne({
+        where: { voucherNo: invoiceNo }
+      });
       if (!existingVoucher) {
         isUnique = true;
       }
@@ -74,7 +76,9 @@ export const createbill = async (req, res) => {
   let invoiceNo;
   if (voucherNo) {
     // Check if provided voucherNo already exists
-    const existingVoucher = await UnifiedVoucher.findOne({ voucherNo: voucherNo });
+    const existingVoucher = await unifiedVoucherRepository.findOne({
+      where: { voucherNo }
+    });
     if (existingVoucher) {
       throw new CustomError(
         statusCodes?.badRequest,
@@ -87,12 +91,11 @@ export const createbill = async (req, res) => {
     invoiceNo = await generateInvoiceNumber();
   }
 
-  const newBill = await Bill.create({
+  const newBill = billRepository.create({
     tenantId,
     propertyId,
     billingMonth,
     bookingId,
-    description,
     invoiceNo: invoiceNo,
     totalBillAmount,
     companyId,
@@ -108,8 +111,11 @@ export const createbill = async (req, res) => {
     // totalBillAmountAfterGST,
     // totalgst,
   });
+  await billRepository.save(newBill);
 
-  const property = await Property.findById(propertyId);
+  const property = await propertyRepository.findOne({
+    where: { id: propertyId }
+  });
   if (!property) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -118,7 +124,9 @@ export const createbill = async (req, res) => {
     );
   }
 
-  const tenant = await Tenant.findById(tenantId);
+  const tenant = await tenantRepository.findOne({
+    where: { id: tenantId }
+  });
   if (!tenant) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -127,22 +135,20 @@ export const createbill = async (req, res) => {
     );
   }
 
-  await UnifiedVoucher.create({
+  const unifiedVoucher = unifiedVoucherRepository.create({
     voucherNo: invoiceNo,
     voucherType: 'AR',
     sourceDocument: {
-      referenceId: newBill._id,
+      referenceId: newBill.id,
       referenceModel: 'Bill'
     },
     companyId,
     propertyId,
     propertyName: property?.propertyname || "",
     particulars: description || `Bill for ${property?.propertyname || 'Property'} - ${formattedBillingMonth}`,
-    amount: {
-      total: totalBillAmount,
-      balance: totalBillAmount,
-      paid: 0
-    },
+    amount: totalBillAmount,
+    outstandingAmount: totalBillAmount,
+    totalAmountOwed: totalBillAmount,
     date: billingDate,
     month: billingMonth,
     status: 'pending',
@@ -159,8 +165,11 @@ export const createbill = async (req, res) => {
     },
     isDeleted: false
   });
+  await unifiedVoucherRepository.save(unifiedVoucher);
 
-  const CompanyDetails = await Company.findById(companyId);
+  const CompanyDetails = await companyRepository.findOne({
+    where: { id: companyId }
+  });
 
   if (process.env.FEATURE_EMAIL == 'on' && CompanyDetails.isMailStatus) {
     sendTenantBillEmail(newBill, property, CompanyDetails, tenant);
@@ -217,7 +226,9 @@ export const bulkUploadWaterBills = async (req) => {
       invoiceNo = `${prefix}${year}${formattedBillingMonth}${randomNumbers}`;
 
       // Check if this voucher number already exists
-      const existingVoucher = await UnifiedVoucher.findOne({ voucherNo: invoiceNo });
+      const existingVoucher = await unifiedVoucherRepository.findOne({
+        where: { voucherNo: invoiceNo }
+      });
       if (!existingVoucher) {
         isUnique = true;
       }
@@ -256,10 +267,12 @@ export const bulkUploadWaterBills = async (req) => {
   for (const waterBill of waterBills) {
     try {
       // Find tenant by name
-      const tenant = await Tenant.findOne({
-        tenantName: waterBill.tenantName,
-        companyId: new mongoose.Types.ObjectId(companyId),
-        isDeleted: false
+      const tenant = await tenantRepository.findOne({
+        where: {
+          tenantName: waterBill.tenantName,
+          companyId,
+          isDeleted: false
+        }
       });
 
       if (!tenant) {
@@ -268,10 +281,12 @@ export const bulkUploadWaterBills = async (req) => {
       }
 
       // Find property by name
-      const property = await Property.findOne({
-        propertyname: waterBill.propertyName,
-        companyId: new mongoose.Types.ObjectId(companyId),
-        isDeleted: false
+      const property = await propertyRepository.findOne({
+        where: {
+          propertyname: waterBill.propertyName,
+          companyId,
+          isDeleted: false
+        }
       });
 
       if (!property) {
@@ -280,12 +295,14 @@ export const bulkUploadWaterBills = async (req) => {
       }
 
       // Check if bill already exists for this tenant, property, and month
-      const existingBill = await Bill.findOne({
-        tenantId: tenant._id,
-        propertyId: property._id,
-        billingMonth: waterBill.billingMonth,
-        companyId: new mongoose.Types.ObjectId(companyId),
-        isDeleted: false
+      const existingBill = await billRepository.findOne({
+        where: {
+          tenantId: tenant.id,
+          propertyId: property.id,
+          billingMonth: waterBill.billingMonth,
+          companyId,
+          isDeleted: false
+        }
       });
 
       if (existingBill) {
@@ -297,17 +314,17 @@ export const bulkUploadWaterBills = async (req) => {
       const invoiceNo = await generateInvoiceNumber();
 
       // Create the bill
-      const newBill = await Bill.create({
-        tenantId: tenant._id,
-        propertyId: property._id,
+      const newBill = billRepository.create({
+        tenantId: tenant.id,
+        propertyId: property.id,
         billingMonth: waterBill.billingMonth,
-        description: waterBill.description,
         invoiceNo: invoiceNo,
         totalBillAmount: waterBill.totalAmount,
-        companyId: new mongoose.Types.ObjectId(companyId),
-        createdBy: new mongoose.Types.ObjectId(createdBy),
+        companyId,
+        createdBy,
         status: false // Unpaid by default
       });
+      await billRepository.save(newBill);
 
       if (!newBill) {
         throw new CustomError(
@@ -321,42 +338,41 @@ export const bulkUploadWaterBills = async (req) => {
       const billingDate = new Date(waterBill.billingMonth + 'T00:00:00');
 
       // Create unified voucher for the water bill using the same pattern as createbill
-      const voucher = await UnifiedVoucher.create({
+      const voucher = unifiedVoucherRepository.create({
         voucherNo: invoiceNo,
         voucherType: 'AR',
         sourceDocument: {
-          referenceId: newBill._id,
+          referenceId: newBill.id,
           referenceModel: 'Bill'
         },
-        companyId: new mongoose.Types.ObjectId(companyId),
-        propertyId: property._id,
+        companyId,
+        propertyId: property.id,
         propertyName: property?.propertyname || "",
         particulars: waterBill.description ? `${waterBill.description} - ${waterBill.waterUnits} units @ ${waterBill.waterRate}/unit` : `Water Bill - ${waterBill.waterUnits} units @ ${waterBill.waterRate}/unit`,
-        amount: {
-          total: waterBill.totalAmount,
-          balance: waterBill.totalAmount,
-          paid: 0
-        },
+        amount: waterBill.totalAmount,
+        outstandingAmount: waterBill.totalAmount,
+        totalAmountOwed: waterBill.totalAmount,
         date: billingDate,
         month: waterBill.billingMonth,
         status: 'pending',
         paymentStatus: 'pending',
         dueDate: new Date(billingDate.getTime() + (30 * 24 * 60 * 60 * 1000)), // 30 days from billing date
         debit: {
-          accountId: tenant._id,
+          accountId: tenant.id,
           accountType: 'Customer',
           accountName: tenant?.tenantName || ""
         },
         credit: {
-          accountId: new mongoose.Types.ObjectId(companyId),
+          accountId: companyId,
           accountType: "Company"
         },
         isDeleted: false
       });
+      await unifiedVoucherRepository.save(voucher);
 
       if (!voucher) {
         // If voucher creation fails, delete the bill
-        await Bill.findByIdAndDelete(newBill._id);
+        await billRepository.delete(newBill.id);
         throw new CustomError(
           statusCodes.badRequest,
           `Failed to create voucher for water bill ${waterBill.tenantName}`,
@@ -483,7 +499,7 @@ const sendTenantBillEmail = async (newBill, property, CompanyDetails, tenant) =>
       tenant?.email,
       "Your Bill from " + CompanyDetails.companyName,
       billDetails,
-      CompanyDetails._id
+      CompanyDetails.id
     );
   } catch (err) {
     console.error("Failed to send tenant bill email:", err);
@@ -494,11 +510,45 @@ const sendTenantBillEmail = async (newBill, property, CompanyDetails, tenant) =>
 
 export const getAllBill = async (req) => {
   const companyId = req.query.id;
-  const AllBill = await UnifiedVoucher.find(
-    { companyId, isDeleted: false, voucherType: 'GB', "amount.balance": { $gt: 0 } }
-  )
-    .populate('sourceDocument.referenceId')
-    .lean();
+  const AllBill = await unifiedVoucherRepository
+    .createQueryBuilder("voucher")
+    .where("voucher.company_id = :companyId", { companyId })
+    .andWhere("voucher.is_deleted = false")
+    .andWhere("voucher.voucher_type = :voucherType", { voucherType: "GB" })
+    .andWhere("voucher.outstanding_amount > 0")
+    .getMany();
+
+  const sourceIdsByModel = new Map();
+  for (const voucher of AllBill) {
+    const sourceDocument = voucher.sourceDocument;
+    if (!sourceDocument?.referenceId || !sourceDocument.referenceModel) {
+      continue;
+    }
+
+    const modelIds = sourceIdsByModel.get(sourceDocument.referenceModel) || [];
+    modelIds.push(sourceDocument.referenceId);
+    sourceIdsByModel.set(sourceDocument.referenceModel, modelIds);
+  }
+
+  const sourceDocumentsByModel = new Map();
+  for (const [model, ids] of sourceIdsByModel) {
+    const sourceDocuments = await AppDataSource.getRepository(model).find({
+      where: { id: In(ids) }
+    });
+    sourceDocumentsByModel.set(
+      model,
+      new Map(sourceDocuments.map((sourceDocument) => [sourceDocument.id, sourceDocument]))
+    );
+  }
+
+  for (const voucher of AllBill) {
+    const sourceDocument = voucher.sourceDocument;
+    const sourceDocuments = sourceDocumentsByModel.get(sourceDocument?.referenceModel);
+    const source = sourceDocuments?.get(sourceDocument?.referenceId);
+    if (source) {
+      voucher.sourceDocument = { ...sourceDocument, referenceId: source };
+    }
+  }
 
   if (!AllBill) {
     throw new CustomError(
@@ -516,10 +566,11 @@ export const getAllBill = async (req) => {
 
 export const getBillByT = async (req) => {
   const tenantId = req.query.id;
-  const tenantBill = await Bill.find({ tenantId: tenantId, isDeleted: false })
-    .populate("tenantId")
-    .populate("propertyId")
-    .sort({ createdAt: -1 });
+  const tenantBill = await billRepository.find({
+    where: { tenantId, isDeleted: false },
+    relations: { tenant: true, property: true },
+    order: { createdAt: "DESC" }
+  });
 
   if (!tenantBill) {
     throw new CustomError(
@@ -533,10 +584,11 @@ export const getBillByT = async (req) => {
 
 export const getBillForTPending = async (req) => {
   const tenantId = req.query.id;
-  const tenantBill = await Bill.find({ tenantId: tenantId, isDeleted: false, status: false })
-    .populate("tenantId")
-    .populate("propertyId")
-    .sort({ createdAt: -1 });
+  const tenantBill = await billRepository.find({
+    where: { tenantId, isDeleted: false, status: false },
+    relations: { tenant: true, property: true },
+    order: { createdAt: "DESC" }
+  });
 
   if (!tenantBill) {
     throw new CustomError(
@@ -550,10 +602,10 @@ export const getBillForTPending = async (req) => {
 
 export const getBillByBookingId = async (req) => {
   const bookingId = req.query.id;
-  const bill = await Bill.find({ bookingId: bookingId })
-    .populate("tenantId")
-    .populate("propertyId")
-    .populate("companyId");
+  const bill = await billRepository.find({
+    where: { bookingId },
+    relations: { tenant: true, property: true, company: true }
+  });
 
   if (!bill) {
     throw new CustomError(
@@ -567,10 +619,10 @@ export const getBillByBookingId = async (req) => {
 
 export const getBillById = async (req) => {
   const billId = req.query.id;
-  const bill = await Bill.findById(billId)
-    .populate("tenantId")
-    .populate("propertyId")
-    .populate("companyId");
+  const bill = await billRepository.findOne({
+    where: { id: billId },
+    relations: { tenant: true, property: true, company: true }
+  });
 
   if (!bill) {
     throw new CustomError(
@@ -584,10 +636,10 @@ export const getBillById = async (req) => {
 
 export const getBillByCreaterBy = async (req) => {
   const AgentId = req.query.id;
-  const bill = await Bill.find({ createdBy: AgentId })
-    .populate("tenantId")
-    .populate("propertyId")
-    .populate("companyId");
+  const bill = await billRepository.find({
+    where: { createdBy: AgentId },
+    relations: { tenant: true, property: true, company: true }
+  });
 
   if (!bill) {
     throw new CustomError(
@@ -601,7 +653,9 @@ export const getBillByCreaterBy = async (req) => {
 
 export const getAllUnpaidBillForAgent = async (req) => {
   const AgentId = req.query.id;
-  const bill = await Bill.find({ createdBy: AgentId, status: false });
+  const bill = await billRepository.find({
+    where: { createdBy: AgentId, status: false }
+  });
 
   if (!bill) {
     throw new CustomError(
@@ -615,10 +669,10 @@ export const getAllUnpaidBillForAgent = async (req) => {
 
 export const reporterDetails = async (req) => {
   const repoterId = req.query.id;
-  const bill = await Bill.findById(repoterId)
-    .populate("tenantId")
-    .populate("propertyId")
-    .populate("companyId");
+  const bill = await billRepository.findOne({
+    where: { id: repoterId },
+    relations: { tenant: true, property: true, company: true }
+  });
 
   if (!bill) {
     throw new CustomError(
@@ -638,31 +692,23 @@ export const getMonthlyPaidBillsForAgent = async (req) => {
     throw new Error('Invalid or missing agentId');
   }
 
-  const result = await Bill.aggregate([
-    {
-      $match: {
-        status: true,
-        isDeleted: { $ne: true },
-        createdBy: new mongoose.Types.ObjectId(agentId),
-        updatedAt: {
-          $gte: new Date(`${year}-01-01`),
-          $lt: new Date(`${year + 1}-01-01`)
-        }
-      }
-    },
-    {
-      $group: {
-        _id: { $month: '$updatedAt' },
-        totalPaid: { $sum: '$totalBillAmountAfterGST' }
-      }
-    }
-  ]);
+  const result = await billRepository
+    .createQueryBuilder("bill")
+    .select("EXTRACT(MONTH FROM bill.updated_at)", "month")
+    .addSelect("SUM(bill.total_bill_amount_after_gst)", "totalPaid")
+    .where("bill.status = :status", { status: true })
+    .andWhere("bill.is_deleted <> :deleted", { deleted: true })
+    .andWhere("bill.created_by = :agentId", { agentId })
+    .andWhere("bill.updated_at >= :startDate", { startDate: new Date(`${year}-01-01`) })
+    .andWhere("bill.updated_at < :endDate", { endDate: new Date(`${year + 1}-01-01`) })
+    .groupBy("EXTRACT(MONTH FROM bill.updated_at)")
+    .getRawMany();
 
   const monthlyTotals = Array(12).fill(0);
 
   result.forEach(item => {
-    const monthIndex = item._id - 1;
-    monthlyTotals[monthIndex] = item.totalPaid;
+    const monthIndex = Number(item.month) - 1;
+    monthlyTotals[monthIndex] = Number(item.totalPaid);
   });
 
   return monthlyTotals;
@@ -679,7 +725,10 @@ export const getBillSummaryBetweenDates = async (req, res) => {
     );
   }
 
-  if (!mongoose.Types.ObjectId.isValid(companyId)) {
+  const isValidCompanyId = typeof companyId === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(companyId);
+
+  if (!isValidCompanyId) {
     throw new CustomError(
       statusCodes.badRequest,
       Message.invalidId,
@@ -690,47 +739,48 @@ export const getBillSummaryBetweenDates = async (req, res) => {
   const start = new Date(startDate);
   const end = new Date(endDate);
 
-  const companyObjectId = new mongoose.Types.ObjectId(companyId);
+  const aggregation = await billRepository
+    .createQueryBuilder("bill")
+    .select("bill.status", "status")
+    .addSelect("SUM(bill.total_bill_amount_after_gst)", "totalAmount")
+    .addSelect("COUNT(*)", "count")
+    .where("bill.is_deleted = :deleted", { deleted: false })
+    .andWhere("bill.company_id = :companyId", { companyId })
+    .andWhere("bill.created_at BETWEEN :start AND :end", { start, end })
+    .groupBy("bill.status")
+    .getRawMany();
 
-  const aggregation = await Bill.aggregate([
-    {
-      $match: {
-        isDeleted: false,
-        companyId: companyObjectId,
-        createdAt: { $gte: start, $lte: end }
-      }
+  const bills = await billRepository.find({
+    where: {
+      isDeleted: false,
+      companyId,
+      createdAt: Between(start, end)
     },
-    {
-      $group: {
-        _id: '$status',
-        totalAmount: { $sum: '$totalBillAmountAfterGST' },
-        count: { $sum: 1 }
-      }
+    relations: { tenant: true, property: true, booking: true, company: true }
+  });
+
+  const properties = await propertyRepository.find({
+    where: {
+      isDeleted: false,
+      companyId,
+      createdAt: Between(start, end)
     }
-  ]);
-
-  const bills = await Bill.find({
-    isDeleted: false,
-    companyId: companyObjectId,
-    createdAt: { $gte: start, $lte: end }
-  }).populate('tenantId propertyId bookingId companyId');
-
-  const properties = await Property.find({
-    isDeleted: false,
-    companyId: companyObjectId,
-    createdAt: { $gte: start, $lte: end }
   });
 
-  const agents = await Agent.find({
-    isDeleted: false,
-    companyId: companyObjectId,
-    createdAt: { $gte: start, $lte: end }
+  const agents = await agentRepository.find({
+    where: {
+      isDeleted: "false",
+      companyId,
+      createdAt: Between(start, end)
+    }
   });
 
-  const tenants = await Tenant.find({
-    isDeleted: false,
-    companyId: companyObjectId,
-    createdAt: { $gte: start, $lte: end }
+  const tenants = await tenantRepository.find({
+    where: {
+      isDeleted: false,
+      companyId,
+      createdAt: Between(start, end)
+    }
   });
 
   const summary = {
@@ -746,10 +796,10 @@ export const getBillSummaryBetweenDates = async (req, res) => {
 
 
   aggregation.forEach(item => {
-    if (item._id === true) {
-      summary.paid = { count: item.count, totalAmount: item.totalAmount };
+    if (item.status === true) {
+      summary.paid = { count: Number(item.count), totalAmount: Number(item.totalAmount) };
     } else {
-      summary.unpaid = { count: item.count, totalAmount: item.totalAmount };
+      summary.unpaid = { count: Number(item.count), totalAmount: Number(item.totalAmount) };
     }
   });
   return summary
@@ -759,7 +809,9 @@ export const changeBillStatus = async (req) => {
   const billId = req.query.id;
   const { paymentType } = req.body;
 
-  const bill = await Bill.findById(billId);
+  const bill = await billRepository.findOne({
+    where: { id: billId }
+  });
 
   if (!bill) {
     throw new CustomError(
@@ -775,22 +827,30 @@ export const changeBillStatus = async (req) => {
   const PropertyId = bill.propertyId;
   const TenantId = bill.tenantId;
 
-  const CompanyDetails = await Company.findById(CompanyId);
-  const property = await Property.findById(PropertyId);
-  const tenant = await Tenant.findById(TenantId);
+  const CompanyDetails = await companyRepository.findOne({
+    where: { id: CompanyId }
+  });
+  const property = await propertyRepository.findOne({
+    where: { id: PropertyId }
+  });
+  const tenant = await tenantRepository.findOne({
+    where: { id: TenantId }
+  });
 
   if (CompanyDetails.isMailStatus) {
     sendTenantBillEmail(bill, property, CompanyDetails, tenant);
   };
 
-  await bill.save();
+  await billRepository.save(bill);
   return bill;
 };
 
 export const deleteBill = async (req, res) => {
   const billId = req.query.id;
 
-  const bill = await Bill.findById(billId);
+  const bill = await billRepository.findOne({
+    where: { id: billId }
+  });
   if (!bill) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -810,18 +870,26 @@ export const deleteBill = async (req, res) => {
 
   // Delete bill
   bill.isDeleted = true;
-  await bill.save();
+  await billRepository.save(bill);
 
   // Delete related records
-  await AccountsReceivable.updateMany(
-    { referenceId: billId, referenceModel: 'Bill', status: /^pending$/i },
-    { isDeleted: true }
-  );
+  await accountsReceivableRepository
+    .createQueryBuilder()
+    .update()
+    .set({ isDeleted: true })
+    .where("reference_id = :billId", { billId })
+    .andWhere("reference_model = :referenceModel", { referenceModel: "Bill" })
+    .andWhere("LOWER(status) = :status", { status: "pending" })
+    .execute();
 
-  await AccountsVoucher.updateMany(
-    { referenceId: billId, models: 'Bill', status: /^pending$/i },
-    { isDeleted: true }
-  );
+  await accountVoucherRepository
+    .createQueryBuilder()
+    .update()
+    .set({ isDeleted: true })
+    .where("reference_id = :billId", { billId })
+    .andWhere("models = :models", { models: "Bill" })
+    .andWhere("LOWER(status) = :status", { status: "pending" })
+    .execute();
 
   return bill;
 };
@@ -845,29 +913,38 @@ export const updateBillVoucher = async (req, res) => {
 
   // Update corresponding UnifiedVoucher if it exists
   try {
-    const existingVoucher = await UnifiedVoucher.findOne({
-      _id: billId,
-      companyId,
-      isDeleted: false
+    const existingVoucher = await unifiedVoucherRepository.findOne({
+      where: {
+        id: billId,
+        companyId,
+        isDeleted: false
+      }
     });
 
     console.log('Existing voucher:', existingVoucher ? existingVoucher : false);
 
     if (existingVoucher) {
       // Safely calculate balance to avoid NaN
-      const currentPaid = Number(existingVoucher["amount.paid"]) || 0;
+      const currentPaid = Number(existingVoucher.totalAmountOwed) - Number(existingVoucher.outstandingAmount) || 0;
       const newBalance = totalBillAmount - currentPaid;
 
       const voucherUpdateData = {
         voucherNo: voucherNo || existingVoucher.voucherNo,
-        "amount.total": Number(totalBillAmount),
-        "amount.balance": Number(newBalance),
+        amount: Number(totalBillAmount),
+        outstandingAmount: Number(newBalance),
+        totalAmountOwed: Number(totalBillAmount),
         month: billingMonth,
         particulars: description || existingVoucher.particulars,
         details: description || existingVoucher.details
       };
 
-      const updatedVoucher = await UnifiedVoucher.findByIdAndUpdate(billId, voucherUpdateData);
+      const updatedVoucher = await unifiedVoucherRepository.preload({
+        id: billId,
+        ...voucherUpdateData
+      });
+      if (updatedVoucher) {
+        await unifiedVoucherRepository.save(updatedVoucher);
+      }
     
       console.log('Updated voucher:', updatedVoucher ? updatedVoucher : false);
 
@@ -896,54 +973,48 @@ export const updateBillVoucher = async (req, res) => {
 
 export const getMonthlyBillData = async (req, res) => {
   const { companyId, year } = req.query;
-  const condition_obj = { isDeleted: false };
+  const query = billRepository
+    .createQueryBuilder("bill")
+    .select("bill.company_id", "companyId")
+    .addSelect("EXTRACT(YEAR FROM bill.billing_month)", "year")
+    .addSelect("EXTRACT(MONTH FROM bill.billing_month)", "month")
+    .addSelect("bill.status", "status")
+    .addSelect("SUM(bill.total_bill_amount_after_gst)", "totalBillAmountAfterGST")
+    .addSelect("SUM(bill.totalgst)", "totalGST")
+    .addSelect("jsonb_agg(to_jsonb(bill))", "bills")
+    .where("bill.is_deleted = :deleted", { deleted: false });
 
   if (companyId) {
-    condition_obj.companyId = new mongoose.Types.ObjectId(companyId);
+    query.andWhere("bill.company_id = :companyId", { companyId });
   }
 
   if (year) {
-    condition_obj.billingMonth = {
-      $gte: new Date(`${year}-01-01T00:00:00.000Z`),
-      $lt: new Date(`${parseInt(year) + 1}-01-01T00:00:00.000Z`),
-    };
+    query
+      .andWhere("bill.billing_month >= :startDate", {
+        startDate: new Date(`${year}-01-01T00:00:00.000Z`)
+      })
+      .andWhere("bill.billing_month < :endDate", {
+        endDate: new Date(`${parseInt(year) + 1}-01-01T00:00:00.000Z`)
+      });
   }
 
-  const result = await Bill.aggregate([
-    { $match: condition_obj },
-    {
-      $group: {
-        _id: {
-          companyId: "$companyId",
-          billingMonth: { $month: "$billingMonth" },
-          year: { $year: "$billingMonth" },
-          status: "$status"
-        },
-        // totalRentAmount: { $sum: "$rentAmount" }, 
-        // totalExtraCharges: { $sum: "$extraAmount" }, 
-        // totalBillAmount: { $sum: "$totalBillAmount" }, 
-        totalBillAmountAfterGST: { $sum: "$totalBillAmountAfterGST" },
-        totalGST: { $sum: "$totalgst" },
-        bills: { $push: "$$ROOT" }, // Push the full document for each bill
-      },
-    },
-    {
-      $sort: { "_id.year": 1, "_id.billingMonth": 1 },
-    },
-    {
-      $project: {
-        companyId: "$_id.companyId",
-        year: "$_id.year",
-        month: "$_id.billingMonth",
-        // totalRentAmount: 1, 
-        // totalExtraCharges: 1, 
-        // totalBillAmount: 1, 
-        totalBillAmountAfterGST: 1,
-        totalGST: 1,
-        bills: 1,
-      },
-    },
-  ]);
+  const rows = await query
+    .groupBy("bill.company_id")
+    .addGroupBy("EXTRACT(YEAR FROM bill.billing_month)")
+    .addGroupBy("EXTRACT(MONTH FROM bill.billing_month)")
+    .addGroupBy("bill.status")
+    .orderBy("EXTRACT(YEAR FROM bill.billing_month)", "ASC")
+    .addOrderBy("EXTRACT(MONTH FROM bill.billing_month)", "ASC")
+    .getRawMany();
+
+  const result = rows.map((row) => ({
+    companyId: row.companyId,
+    year: Number(row.year),
+    month: Number(row.month),
+    totalBillAmountAfterGST: Number(row.totalBillAmountAfterGST),
+    totalGST: Number(row.totalGST),
+    bills: row.bills
+  }));
 
   return result;
 
@@ -951,28 +1022,31 @@ export const getMonthlyBillData = async (req, res) => {
 
 export const getTotalSalesForMonth = async (req) => {
   const { companyId, year } = req?.query;
-  const condition_obj = { isDeleted: false, status: true };
+  const query = billRepository
+    .createQueryBuilder("bill")
+    .select("EXTRACT(MONTH FROM bill.updated_at)", "month")
+    .addSelect("SUM(bill.total_bill_amount_after_gst)", "total_sales_amount")
+    .where("bill.is_deleted = :deleted", { deleted: false })
+    .andWhere("bill.status = :status", { status: true });
+
   if (companyId) {
-    condition_obj.companyId = new mongoose.Types.ObjectId(companyId);
+    query.andWhere("bill.company_id = :companyId", { companyId });
   }
+
   if (year) {
-    condition_obj["updatedAt"] = {
-      $gte: new Date(`${year}-01-01`),
-      $lt: new Date(`${parseInt(year) + 1}-01-01`),
-    };
+    query
+      .andWhere("bill.updated_at >= :startDate", {
+        startDate: new Date(`${year}-01-01`)
+      })
+      .andWhere("bill.updated_at < :endDate", {
+        endDate: new Date(`${parseInt(year) + 1}-01-01`)
+      });
   }
-  const totalAmount = await Bill.aggregate([
-    { $match: condition_obj },
-    {
-      $group: {
-        _id: { $month: "$updatedAt" },
-        total_sales_amount: { $sum: "$totalBillAmountAfterGST" },
-      },
-    },
-    {
-      $sort: { _id: 1 },
-    },
-  ]);
+
+  const totalAmount = await query
+    .groupBy("EXTRACT(MONTH FROM bill.updated_at)")
+    .orderBy("EXTRACT(MONTH FROM bill.updated_at)", "ASC")
+    .getRawMany();
   const months = [
     "Jan",
     "Feb",
@@ -988,36 +1062,40 @@ export const getTotalSalesForMonth = async (req) => {
     "Dec",
   ];
   const formattedData = months.map((month, index) => {
-    const monthData = totalAmount.find((data) => data._id === index + 1);
-    return monthData ? monthData.total_sales_amount : 0;
+    const monthData = totalAmount.find((data) => Number(data.month) === index + 1);
+    return monthData ? Number(monthData.total_sales_amount) : 0;
   });
   return formattedData;
 };
 
 export const getMonthlyPaidForTenant = async (req) => {
   const { tenantId, year } = req?.query;
-
-  const condition_obj = {
-    isDeleted: false,
-    status: true,
-    tenantId: new mongoose.Types.ObjectId(tenantId)
-  };
+  const query = billRepository
+    .createQueryBuilder("bill")
+    .select("bill.updated_at", "updatedAt")
+    .addSelect("bill.total_bill_amount_after_gst", "totalBillAmountAfterGST")
+    .where("bill.is_deleted = :deleted", { deleted: false })
+    .andWhere("bill.status = :status", { status: true })
+    .andWhere("bill.tenant_id = :tenantId", { tenantId });
 
   if (year) {
-    condition_obj.updatedAt = {
-      $gte: new Date(`${year}-01-01`),
-      $lt: new Date(`${parseInt(year) + 1}-01-01`)
-    };
+    query
+      .andWhere("bill.updated_at >= :startDate", {
+        startDate: new Date(`${year}-01-01`)
+      })
+      .andWhere("bill.updated_at < :endDate", {
+        endDate: new Date(`${parseInt(year) + 1}-01-01`)
+      });
   }
 
-  const bills = await Bill.find(condition_obj).select('updatedAt totalBillAmountAfterGST');
+  const bills = await query.getRawMany();
 
   // Initialize an array for each month's payment (12 months)
   const paidArray = new Array(12).fill(0);
 
   bills.forEach(bill => {
-    const month = bill.updatedAt.getMonth();
-    paidArray[month] += bill.totalBillAmountAfterGST;
+    const month = new Date(bill.updatedAt).getMonth();
+    paidArray[month] += Number(bill.totalBillAmountAfterGST);
   });
 
   return paidArray;
@@ -1025,27 +1103,29 @@ export const getMonthlyPaidForTenant = async (req) => {
 
 export const getTotalSalesForYear = async (req) => {
   const { companyId, year } = req?.query;
-  const condition_obj = { isDeleted: false, status: true };
+  const query = billRepository
+    .createQueryBuilder("bill")
+    .select("SUM(bill.total_bill_amount_after_gst)", "total_sales_amount")
+    .where("bill.is_deleted = :deleted", { deleted: false })
+    .andWhere("bill.status = :status", { status: true });
 
   if (companyId) {
-    condition_obj.companyId = new mongoose.Types.ObjectId(companyId);
+    query.andWhere("bill.company_id = :companyId", { companyId });
   }
   if (year) {
-    condition_obj["createdAt"] = {
-      $gte: new Date(`${year}-01-01`),
-      $lt: new Date(`${parseInt(year) + 1}-01-01`),
-    };
+    query
+      .andWhere("bill.created_at >= :startDate", {
+        startDate: new Date(`${year}-01-01`)
+      })
+      .andWhere("bill.created_at < :endDate", {
+        endDate: new Date(`${parseInt(year) + 1}-01-01`)
+      });
   }
 
-  const totalYearlySales = await Bill.aggregate([
-    { $match: condition_obj },
-    {
-      $group: {
-        _id: null,
-        total_sales_amount: { $sum: "$totalBillAmountAfterGST" },
-      },
-    },
-  ]);
+  const totalYearlySalesRow = await query.getRawOne();
+  const totalYearlySales = totalYearlySalesRow?.total_sales_amount == null
+    ? []
+    : [{ _id: null, total_sales_amount: Number(totalYearlySalesRow.total_sales_amount) }];
 
   return totalYearlySales
 
@@ -1053,7 +1133,9 @@ export const getTotalSalesForYear = async (req) => {
 
 export const totalPendingBills = async (req) => {
   const companyId = req.query.id;
-  const bill = await Bill.find({ companyId: companyId, status: false })
+  const bill = await billRepository.find({
+    where: { companyId, status: false }
+  });
 
   if (!bill) {
     throw new CustomError(
@@ -1067,7 +1149,9 @@ export const totalPendingBills = async (req) => {
 
 export const totalPaidBills = async (req) => {
   const companyId = req.query.id;
-  const bill = await Bill.find({ companyId: companyId, status: true })
+  const bill = await billRepository.find({
+    where: { companyId, status: true }
+  });
 
   if (!bill) {
     throw new CustomError(
@@ -1114,10 +1198,12 @@ export const billVoucher = async (req, res) => {
         // If _id is provided, this is a payment against existing bill
         if (_id) {
             // Find the bill record
-            const billRecord = await Bill.findOne({
-                _id,
-                companyId,
-                isDeleted: false
+            const billRecord = await billRepository.findOne({
+                where: {
+                  id: _id,
+                  companyId,
+                  isDeleted: false
+                }
             });
 
             if (!billRecord) {
@@ -1130,13 +1216,13 @@ export const billVoucher = async (req, res) => {
             }
 
             // Update bill status to paid
-            await Bill.updateOne(
-                { _id: billRecord._id },
-                { $set: { status: true } }
+            await billRepository.update(
+              { id: billRecord.id },
+              { status: true }
             );
 
             // Create payment voucher
-            const data = await UnifiedVoucher.create({
+            const data = unifiedVoucherRepository.create({
                 voucherNo: finalVoucherNo,
                 voucherType: voucherType || 'BILL',
                 companyId,
@@ -1153,11 +1239,9 @@ export const billVoucher = async (req, res) => {
                     accountType: credit?.accountType || 'Tenant',
                     accountName: credit?.accountName || 'Tenant Account'
                 },
-                amount: {
-                    balance: 0,
-                    total: amount,
-                    paid: amount
-                },
+                amount,
+                outstandingAmount: 0,
+                totalAmountOwed: amount,
                 sourceDocument: sourceDocument || {
                     referenceId: _id,
                     referenceModel: 'Bill'
@@ -1167,6 +1251,7 @@ export const billVoucher = async (req, res) => {
                 tags: tags || ['Payment', 'Bill'],
                 details: Details || `Payment for bill`
             });
+              await unifiedVoucherRepository.save(data);
 
             if (!data) {
                 throw new CustomError(
@@ -1197,7 +1282,8 @@ export const billVoucher = async (req, res) => {
             // Add optional fields if they exist
             if (sourceDocument) voucherData.sourceDocument = sourceDocument;
 
-            const data = await UnifiedVoucher.create(voucherData);
+            const data = unifiedVoucherRepository.create(voucherData);
+            await unifiedVoucherRepository.save(data);
 
             if (!data) {
                 throw new CustomError(

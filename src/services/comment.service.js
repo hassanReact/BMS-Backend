@@ -1,17 +1,19 @@
-import commentsModel from "../models/coments.model.js";
+import AppDataSource from "../core/database/data-source.js";
 import CustomError from "../utils/exception.js";
-import mongoose from "mongoose";
+
+const commentRepository = AppDataSource.getRepository("Comment");
 
 export const create = async (req, res) => {
     const { senderId, senderRole, message } = req.body;
     const complaintId = req.query.complaintId;
 
-    const comment = await commentsModel.create({
+    const comment = commentRepository.create({
         complaintId,
         senderId,
         senderRole,
         message
     });
+    await commentRepository.save(comment);
 
     if (!comment) {
         throw new CustomError(
@@ -26,7 +28,10 @@ export const create = async (req, res) => {
 export const getComments = async (req, res) => {
     const id = req.params.complaintId;
 
-    const comments = await commentsModel.find({ complaintId: id }).sort({ createdAt: 1 });
+    const comments = await commentRepository.find({
+        where: { complaintId: id },
+        order: { createdAt: "ASC" },
+    });
 
     if (!comments) {
         throw new CustomError(
@@ -49,7 +54,7 @@ export const markCommentsAsRead = async (req, res, next) => {
         });
     }
 
-    const comments = await commentsModel.find({ complaintId });
+    const comments = await commentRepository.find({ where: { complaintId } });
 
     console.log(comments)
 
@@ -60,7 +65,7 @@ export const markCommentsAsRead = async (req, res, next) => {
 
         if (!alreadyRead) {
             comment.readBy.push({ userId, role });
-            await comment.save();
+            await commentRepository.save(comment);
         }
     }
     return comments;
@@ -70,14 +75,14 @@ export const newMessages = async (req, res) => {
     const complaintId = req.params.complaintId;
     const userId = req.params.userId;
 
-    const unreadCount = await commentsModel.countDocuments({
-        complaintId,
-        readBy: {
-            $not: {
-                $elemMatch: { userId: userId }
-            }
-        }
-    });
+    const unreadCount = await commentRepository
+        .createQueryBuilder("comment")
+        .where("comment.complaint_id = :complaintId", { complaintId })
+        .andWhere(
+            "NOT EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(comment.read_by, '[]'::jsonb)) AS entry WHERE entry->>'userId' = :userId)",
+            { userId: userId.toString() }
+        )
+        .getCount();
 
     return unreadCount;
 };

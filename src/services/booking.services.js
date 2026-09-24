@@ -1,6 +1,4 @@
-// import Agent from "../models/agents.model.js";
-import Booking from "../models/booking,model.js";
-import Property from "../models/property.model.js";
+import AppDataSource from "../core/database/data-source.js";
 import {
   errorCodes,
   bookingPrefix,
@@ -8,11 +6,14 @@ import {
   statusCodes,
 } from "../core/common/constant.js";
 import CustomError from "../utils/exception.js";
-import Agent from "../models/agents.model.js";
-import Company from "../models/company.model.js";
-import Tenant from "../models/tenant.model.js";
 import {sendEmail} from "../core/helpers/mail.js"
-import Bill from "../models/billing.model.js";
+import { Between } from "typeorm";
+
+const bookingRepository = AppDataSource.getRepository("Booking");
+const propertyRepository = AppDataSource.getRepository("Property");
+const tenantRepository = AppDataSource.getRepository("Tenant");
+const companyRepository = AppDataSource.getRepository("Company");
+const agentRepository = AppDataSource.getRepository("Agent");
 
 export const createBooking = async (req, res) => {
   const {
@@ -40,7 +41,7 @@ export const createBooking = async (req, res) => {
   
     const bookingNo = generateBookingNumber();
 
-  const newBooking = await Booking.create({
+  const newBooking = bookingRepository.create({
     bookingNo:bookingNo,
     accountName,
     tenantId,
@@ -55,16 +56,17 @@ export const createBooking = async (req, res) => {
     blockId,
     createdBy,
   });
-  const property = await Property.findById(propertyId);
+  await bookingRepository.save(newBooking);
+  const property = await propertyRepository.findOne({ where: { id: propertyId } });
   property.isVacant = false;
-  await property.save();
+  await propertyRepository.save(property);
 
-  const tenant = await Tenant.findById(tenantId);
+  const tenant = await tenantRepository.findOne({ where: { id: tenantId } });
   tenant.isOccupied = true;
-  await tenant.save();
+  await tenantRepository.save(tenant);
 
   
-  const CompanyDetails = await Company.findById(companyId);
+  const CompanyDetails = await companyRepository.findOne({ where: { id: companyId } });
   if(process.env.FEATURE_EMAIL == 'on' && CompanyDetails.isMailStatus){
     await sendBookingConfirmationEmail(tenant,property,CompanyDetails,newBooking);
   }
@@ -124,8 +126,8 @@ const sendBookingConfirmationEmail = async (tenant,property, CompanyDetails, new
         <h2 style="margin: 0;">Your Booking Confirmation - ${CompanyDetails.companyName}</h2>
       </div>
 
-      <!-- Body Section -->
       <div style="max-width: 600px; margin: 20px auto; background-color: #ffffff; border: 1px solid #ddd; padding: 20px; box-sizing: border-box;">
+        <!-- Body Section -->
         <p style="font-size: 16px; line-height: 1.6;">Dear ${tenant?.tenantName},</p>
         <p style="font-size: 16px; line-height: 1.6;">Thank you for booking with <strong>${CompanyDetails.companyName}</strong>. Your booking has been successfully confirmed. Below are the details of your booking:</p>
         
@@ -155,7 +157,7 @@ const sendBookingConfirmationEmail = async (tenant,property, CompanyDetails, new
       tenant?.email,
       "Your Booking Confirmation - Tenant Booking Details",
       bookingDetails,
-      CompanyDetails._id
+      CompanyDetails.id
     );
   } catch (err) {
     console.error("Failed to send booking confirmation email:", err);
@@ -173,9 +175,9 @@ const generateBookingId = () => {
 
 export const editBooking = async (req, res, next) => {
   const { id } = req.query;
-  const updatedBooking = await Booking.findByIdAndUpdate(
-    id,
-    {
+  const booking = await bookingRepository.findOne({ where: { id } });
+  const updatedBooking = booking
+    ? await bookingRepository.save(Object.assign(booking, {
       accountName: req.body?.accountName,
       tenantId: req.body?.tenantId,
       propertyId: req.body?.propertyId,
@@ -187,11 +189,8 @@ export const editBooking = async (req, res, next) => {
       projectId: req.body?.projectId,
       blockId: req.body?.blockId,
       createdBy: req.body?.createdBy,
-    },
-    {
-      new: true,
-    }
-  );
+    }))
+    : null;
   if (!updatedBooking) {
     return new CustomError(
       statusCodes?.serviceUnavailable,
@@ -205,14 +204,11 @@ export const editBooking = async (req, res, next) => {
 export const getBooking = async (req) => {
   const { id } = req.query;
 
-  const AllBooking = await Booking.find({ createdBy: id, isDeleted: false })
-    .populate("tenantId", "tenantName")
-    .populate("ownerId", "ownerName")
-    .populate("propertyId", "propertyname")
-    .populate("projectId", "projectName")
-    .populate("blockId", "blockName")
-    .sort({ createdAt: -1 })
-    .lean();
+  const AllBooking = await bookingRepository.find({
+    where: { createdBy: id, isDeleted: false },
+    relations: ["tenant", "owner", "property", "project", "block"],
+    order: { createdAt: "DESC" },
+  });
 
   if (!AllBooking) {
     throw new CustomError(
@@ -226,12 +222,12 @@ export const getBooking = async (req) => {
   for (const booking of AllBooking) {
     const createdBy = booking.createdBy;
 
-    let creater = await Agent.findById(createdBy);
+    let creater = await agentRepository.findOne({ where: { id: createdBy } });
     let name;
     if (creater) {
       name = creater.agentName;
     } else {
-      creater = await Company.findById(createdBy);
+      creater = await companyRepository.findOne({ where: { id: createdBy } });
       if (creater) {
         name = creater.companyName;
       }
@@ -243,14 +239,10 @@ export const getBooking = async (req) => {
 
 export const getBookingById = async (req) => {
   const { id } = req.query;
-  const booking = await Booking.findById(id)
-    .populate("tenantId")
-    .populate("propertyId")
-    .populate("companyId")
-    .populate("projectId")
-    .populate("blockId")
-    .sort({ createdAt: -1 })
-    .lean();
+  const booking = await bookingRepository.findOne({
+    where: { id },
+    relations: ["tenant", "property", "company", "project", "block"],
+  });
 
   if (!booking) {
     throw new CustomError(
@@ -265,7 +257,7 @@ export const getBookingById = async (req) => {
 export const breakTheBooking = async (req) => {
   const { id } = req.query;
 
-  const booking = await Booking.findById(id);
+  const booking = await bookingRepository.findOne({ where: { id } });
   if (!booking) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -274,9 +266,9 @@ export const breakTheBooking = async (req) => {
     );
   }
   booking.isDeleted = true;
-  booking.save();
+  await bookingRepository.save(booking);
 
-  const tenant = await Tenant.findById(booking.tenantId);
+  const tenant = await tenantRepository.findOne({ where: { id: booking.tenantId } });
   if (!tenant) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -286,9 +278,9 @@ export const breakTheBooking = async (req) => {
   }
 
   tenant.isOccupied = false;
-  await tenant.save();
+  await tenantRepository.save(tenant);
 
-  const property = await Property.findById(booking.propertyId);
+  const property = await propertyRepository.findOne({ where: { id: booking.propertyId } });
   if (!property) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -298,7 +290,7 @@ export const breakTheBooking = async (req) => {
   }
 
   property.isVacant = true;
-  await property.save();
+  await propertyRepository.save(property);
 
   return booking;
 };
@@ -306,13 +298,11 @@ export const breakTheBooking = async (req) => {
 export const getAllBooking = async (req) => {
   const { id } = req.query;
 
-  const allBooking = await Booking.find({ companyId: id, isDeleted: false })
-    .populate("tenantId")
-    .populate("propertyId")
-    .populate("projectId")
-    .populate("blockId")
-    .sort({ createdAt: -1 })
-    .lean();
+  const allBooking = await bookingRepository.find({
+    where: { companyId: id, isDeleted: false },
+    relations: ["tenant", "property", "project", "block"],
+    order: { createdAt: "DESC" },
+  });
 
   if (!allBooking) {
     throw new CustomError(
@@ -326,12 +316,12 @@ export const getAllBooking = async (req) => {
   for (const booking of allBooking) {
     const createdBy = booking.createdBy;
 
-    let creater = await Agent.findById(createdBy);
+    let creater = await agentRepository.findOne({ where: { id: createdBy } });
     let name;
     if (creater) {
       name = creater.agentName;
     } else {
-      creater = await Company.findById(createdBy);
+      creater = await companyRepository.findOne({ where: { id: createdBy } });
       if (creater) {
         name = creater.companyName;
       }
@@ -351,14 +341,14 @@ export const vacantPropertyOnNotice = async (req, res) => {
   after15Days.setDate(today.getDate() + 15);
   after15Days.setHours(23, 59, 59, 999);
 
-  const bookings = await Booking.find({
-    endingDate: {
-      $gte: today,
-      $lte: after15Days,
+  const bookings = await bookingRepository.find({
+    where: {
+      endingDate: Between(today, after15Days),
+      companyId: id,
+      isDeleted: false,
     },
-    companyId: id,
-    isDeleted: false,
-  }).populate("propertyId tenantId companyId projectId blockId");
+    relations: ["property", "tenant", "company", "project", "block"],
+  });
 
   return bookings;
 };

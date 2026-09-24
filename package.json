@@ -20,7 +20,10 @@
     "db:migrate": "node scripts/setupDatabase.js",
     "db:setup": "node scripts/setupDatabase.js",
     "postinstall": "npm run setup",
-    "deploy:setup": "npm run setup && npm run create-admin:env"
+    "deploy:setup": "npm run setup && npm run create-admin:env",
+    "create:migration": "node scripts/migration.script.js",
+    "migration": "typeorm migration:run -d src/core/database/data-source.js",
+    "migration:run": "typeorm migration:run -d src/core/database/data-source.js"
   },
   "author": "",
   "license": "ISC",

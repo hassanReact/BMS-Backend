@@ -1,15 +1,12 @@
-import Owner from "../models/owner.model.js";
 import { errorCodes, Message, statusCodes } from "../core/common/constant.js";
 import CustomError from "../utils/exception.js";
-import Property from '../models/property.model.js'
-import Company from "../models/company.model.js";
 import ExcelJS from 'exceljs';
 import { FactorListInstance } from "twilio/lib/rest/verify/v2/service/entity/factor.js";
-import Booking from "../models/booking,model.js";
-import User from "../models/user.model.js";
-import Role from "../models/role.model.js";
-import UserRole from "../models/userRole.model.js";
-import mongoose from "mongoose";
+import AppDataSource from "../core/database/data-source.js";
+import { hashPassword, comparePassword } from "./user.services.js";
+import jwt from "jsonwebtoken";
+
+const getRepository = (entityName) => AppDataSource.getRepository(entityName);
 
 
 export const registerOwner = async (req, res) => {
@@ -22,18 +19,16 @@ export const registerOwner = async (req, res) => {
     companyId,
   } = req.body;
 
-  const session = await mongoose.startSession();
+  let createdOwner;
 
-  try {
-    let createdOwner;
-    
-
-    await session.withTransaction(async () => {
+  await AppDataSource.transaction(async (transactionalEntityManager) => {
+    const roleRepository = transactionalEntityManager.getRepository("Role");
+    const userRepository = transactionalEntityManager.getRepository("User");
+    const userRoleRepository = transactionalEntityManager.getRepository("UserRole");
+    const ownerRepository = transactionalEntityManager.getRepository("Owner");
 
       // 1. Find the Owner role
-      const ownerRole = await Role.findOne({
-        name: "Owner",
-      }).session(session);
+      const ownerRole = await roleRepository.findOne({ where: { name: "Owner" } });
 
       if (!ownerRole) {
         throw new CustomError(
@@ -44,10 +39,9 @@ export const registerOwner = async (req, res) => {
       }
 
       // 2. Find existing User by email
-      let user = await User.findOne({
-        email: email.toLowerCase().trim(),
-        isDeleted: false,
-      }).session(session);
+      let user = await userRepository.findOne({
+        where: { email: email.toLowerCase().trim(), isDeleted: false },
+      });
 
       if (user){
         throw new CustomError(
@@ -58,56 +52,38 @@ export const registerOwner = async (req, res) => {
       }
 
       // 3. If User doesn't exist, create the User
-      if (user) {
-        const createdUsers = await User.create(
-          [
-            {
-              fullname: ownerName,
-              email: email.toLowerCase().trim(),
-              password,
-              phoneNo,
-            },
-          ],
-          { session }
-        );
-
-        user = createdUsers[0];
+      if (!user) {
+        user = userRepository.create({
+          fullname: ownerName,
+          email: email.toLowerCase().trim(),
+          password: await hashPassword(password),
+          phoneNo,
+        });
+        await userRepository.save(user);
       }
 
       // 5. Create UserRole
-      await UserRole.create(
-        [
-          {
-            userId: user._id,
-            roleId: ownerRole._id,
-            companyId,
-          },
-        ],
-        { session }
-      );
+      const userRole = userRoleRepository.create({
+        userId: user.id,
+        roleId: ownerRole.id,
+        companyId,
+      });
+      await userRoleRepository.save(userRole);
 
       // 7. Create Owner business profile
-      const owner = await Owner.create(
-        [
-          {
-            userId: user._id,
-            ownerName,
-            email: user.email,
-            phoneNo,
-            address,
-            companyId,
-          },
-        ],
-        { session }
-      );
-
-      createdOwner = owner[0];
-    });
+      createdOwner = ownerRepository.create({
+        userId: user.id,
+        ownerName,
+        email: user.email,
+        phoneNo,
+        address,
+        companyId,
+      });
+      await ownerRepository.save(createdOwner);
+  });
 
     // 8. Return created Owner
-    const result = await Owner.findById(createdOwner._id).select(
-      "-password -refreshToken"
-    );
+    const result = await getRepository("Owner").findOne({ where: { id: createdOwner.id } });
 
    if(!result){
     throw new CustomError(
@@ -118,15 +94,12 @@ export const registerOwner = async (req, res) => {
     }
     return result;
 
-  } finally {
-    await session.endSession();
-  }
 };
 
 export const getOwnerById = async (req, res) => { 
   const ownerId = req.query.id;
 
-  const property = await Owner.findById(ownerId);
+  const property = await getRepository("Owner").findOne({ where: { id: ownerId } });
   if (!property) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -147,7 +120,10 @@ export const getAllOwner = async (req) => {
     );
   }
 
-  const allOwner = await Owner.find({companyId:companyId, isDeleted: false}).sort({ createdAt: -1 });
+  const allOwner = await getRepository("Owner").find({
+    where: { companyId, isDeleted: false },
+    order: { createdAt: "DESC" },
+  });
 
   if (!allOwner) {
     throw new CustomError(
@@ -161,11 +137,11 @@ export const getAllOwner = async (req) => {
 
 export const getAllOwnerProperties = async (req, res) => {
   const ownerId = req.query.id;
-  const properties = await Booking.find({ isDeleted: false, ownerId })
-    .populate('propertyId')
-    .populate('ownerId')
-    .populate('companyId')
-    .sort({ createdAt: -1 });
+  const properties = await getRepository("Booking").find({
+    where: { isDeleted: false, ownerId },
+    relations: { property: true, owner: true, company: true },
+    order: { createdAt: "DESC" },
+  });
 
   if (!properties) {
     throw new CustomError(
@@ -175,7 +151,15 @@ export const getAllOwnerProperties = async (req, res) => {
     );
   }
 
-  return properties;
+  return properties.map((booking) => {
+    const { property, owner, company, ...bookingData } = booking;
+    return {
+      ...bookingData,
+      propertyId: property,
+      ownerId: owner,
+      companyId: company,
+    };
+  });
 };
 
 export const getOwnerPropertyById = async (req, res) => {
@@ -189,14 +173,10 @@ export const getOwnerPropertyById = async (req, res) => {
     );
   }
 
-  const property = await Booking.findOne({ 
-    isDeleted: false, 
-    ownerId, 
-    propertyId 
-  })
-    .populate('propertyId')
-    .populate('ownerId')
-    .populate('companyId');
+  const property = await getRepository("Booking").findOne({
+    where: { isDeleted: false, ownerId, propertyId },
+    relations: { property: true, owner: true, company: true },
+  });
 
   if (!property) {
     throw new CustomError(
@@ -206,17 +186,42 @@ export const getOwnerPropertyById = async (req, res) => {
     );
   }
 
-  return property;
+  if (!property) {
+    return property;
+  }
+  const { property: propertyRecord, owner, company, ...bookingData } = property;
+  return {
+    ...bookingData,
+    propertyId: propertyRecord,
+    ownerId: owner,
+    companyId: company,
+  };
 };
 
 const generateAccessAndRefreshTokens = async (userId) => {
   try {
-    const owner = await Owner.findById(userId);
-    const accessToken = owner.generateAccessToken();
-    const refreshToken = owner.generateRefreshToken();
+    const owner = await getRepository("Owner").findOne({ where: { id: userId } });
+    const user = owner
+      ? await getRepository("User").findOne({ where: { id: owner.userId } })
+      : null;
+    const userRole = user
+      ? await getRepository("UserRole").findOne({
+          where: { userId: user.id, status: "active" },
+          relations: { role: true, company: true },
+        })
+      : null;
+    const payload = {
+      userId: user.id,
+      email: user.email,
+      role: userRole?.role?.name,
+      roleId: userRole?.role?.id,
+      companyId: userRole?.company?.id || null,
+    };
+    const accessToken = jwt.sign(payload, process.env.ACCESS_TOKEN_SECRET, { expiresIn: process.env.ACCESS_TOKEN_EXPIRY });
+    const refreshToken = jwt.sign(payload, process.env.REFRESH_TOKEN_SECRET, { expiresIn: process.env.REFRESH_TOKEN_EXPIRY });
 
-    owner.refreshToken = refreshToken;
-    await owner.save({ validateBeforeSave: false });
+    user.refreshToken = refreshToken;
+    await getRepository("User").save(user);
     return { accessToken, refreshToken };
   } catch (error) {
     throw new CustomError(
@@ -230,9 +235,11 @@ const generateAccessAndRefreshTokens = async (userId) => {
 
 export const getPropertyByOwnerId = async(req, res, next) => {
   const ownerId = req.query.id;
-  const Properties = await Property.find({ ownerId, isDeleted: false })
-  .populate('typeId')
-  .sort({ createdAt: -1 });
+  const Properties = await getRepository("Property").find({
+    where: { ownerId, isDeleted: false },
+    relations: { type: true },
+    order: { createdAt: "DESC" },
+  });
   if (!Properties  ) {
     return new CustomError(
       statusCodes?.serviceUnavailable,
@@ -246,7 +253,7 @@ export const getPropertyByOwnerId = async(req, res, next) => {
 export const loginOwner = async (req, res) => {
   const { email, password } = req.body;
 
-  const owner = await Owner.findOne({ email });
+  const owner = await getRepository("Owner").findOne({ where: { email } });
   if (!owner) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -255,7 +262,8 @@ export const loginOwner = async (req, res) => {
     );
   }
 
-  const passwordVerify = await owner.isPasswordCorrect(password);
+  const user = await getRepository("User").findOne({ where: { id: owner.userId } });
+  const passwordVerify = await comparePassword(password, user.password);
 
   if (!passwordVerify) {
     throw new CustomError(
@@ -266,12 +274,10 @@ export const loginOwner = async (req, res) => {
   }
 
   const { accessToken, refreshToken } = await generateAccessAndRefreshTokens(
-    owner._id
+    owner.id
   );
 
-  const loginOwner = await Owner.findById(owner._id).select(
-    "-password -refreshToken"
-  );
+  const loginOwner = await getRepository("Owner").findOne({ where: { id: owner.id } });
 
   res.setHeader("token", accessToken);
 
@@ -291,11 +297,9 @@ export const loginOwner = async (req, res) => {
 export const editOwner = async(req, res, next) => {
   const OwnerId = req.query.id;
   const updateData = req.body; 
-  const editOwner = await Owner.findByIdAndUpdate(
-    OwnerId,
-    updateData,
-    { new: true, runValidators: true } 
-  ) 
+  const ownerRepository = getRepository("Owner");
+  const owner = await ownerRepository.findOne({ where: { id: OwnerId } });
+  const editOwner = owner ? await ownerRepository.save(Object.assign(owner, updateData)) : null;
 
   if (!updateData) {
     return new CustomError(
@@ -310,7 +314,7 @@ export const editOwner = async(req, res, next) => {
 export const deleteOwner = async (req, res) => {
   const ownerId = req.query.id;
 
-  const owner = await Owner.findById(ownerId);
+  const owner = await getRepository("Owner").findOne({ where: { id: ownerId } });
   if (!owner) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -320,7 +324,7 @@ export const deleteOwner = async (req, res) => {
   }
 
   owner.isDeleted = true;
-  await owner.save();
+  await getRepository("Owner").save(owner);
   return owner
 };
 
@@ -366,11 +370,11 @@ export const bulkUploadOwner = async (req) => {
     });
 
     for (const owner of owners) {
-        const existingOwner = await Owner.findOne({
-          $or: [
+        const existingOwner = await getRepository("Owner").findOne({
+          where: [
             { ownerName: owner.ownerName, isDeleted: false },
-            { email: owner.email, isDeleted: false }
-          ]
+            { email: owner.email, isDeleted: false },
+          ],
         });
 
         if (existingOwner) {
@@ -378,7 +382,9 @@ export const bulkUploadOwner = async (req) => {
         }
 
 
-        const newOwner = await Owner.create(owner);
+        const ownerRepository = getRepository("Owner");
+        const newOwner = ownerRepository.create(owner);
+        await ownerRepository.save(newOwner);
         if (!newOwner) {
           throw new CustomError(
             statusCodes.badRequest,

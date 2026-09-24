@@ -1,12 +1,15 @@
 import { errorCodes, Message, statusCodes } from "../core/common/constant.js";
 import CustomError from "../utils/exception.js";
-import Complaint from "../models/complaints.model.js";
+import AppDataSource from "../core/database/data-source.js";
+import { IsNull, Not } from "typeorm";
+
+const complaintRepository = AppDataSource.getRepository("Complaint");
 
 export const complainRegistration = async (req, res) => {
 
   const { tenantName, propertyId, companyId, tenantId, concernTopic, description, staffId, staffName } = req.body;
 
-  const isComplainAlreadyExist = await Complaint.findOne({ concernTopic });
+  const isComplainAlreadyExist = await complaintRepository.findOne({ where: { concernTopic } });
 
   if (isComplainAlreadyExist) {
     throw new CustomError(
@@ -16,7 +19,7 @@ export const complainRegistration = async (req, res) => {
     );
   }
 
-  const complain = await Complaint.create({
+  const complain = complaintRepository.create({
     assignedId: staffId,
     assignedName: staffName,
     tenantName,
@@ -27,6 +30,7 @@ export const complainRegistration = async (req, res) => {
     description,
     status: !!(staffId && staffName),
   });
+  await complaintRepository.save(complain);
 
   return complain;
 };
@@ -35,7 +39,7 @@ export const complainAgentRegistration = async (req, res) => {
 
   const { tenantName, propertyId, companyId, tenantId, agentId, concernTopic, description } = req.body;
 
-  const isComplainAlreadyExist = await Complaint.findOne({ concernTopic });
+  const isComplainAlreadyExist = await complaintRepository.findOne({ where: { concernTopic } });
 
   if (isComplainAlreadyExist) {
     throw new CustomError(
@@ -45,7 +49,7 @@ export const complainAgentRegistration = async (req, res) => {
     );
   }
 
-  const complain = await Complaint.create({
+  const complain = complaintRepository.create({
     tenantName,
     propertyId,
     companyId,
@@ -54,6 +58,7 @@ export const complainAgentRegistration = async (req, res) => {
     concernTopic,
     description,
   });
+  await complaintRepository.save(complain);
 
   return complain;
 };
@@ -69,10 +74,13 @@ export const allComplain = async (req) => {
     );
   }
 
-  const allComplain = await Complaint.find({
-    $or: [{ tenantId: id }, { agentId: id }],
-    isDeleted: false
-  }).sort({ createdAt: -1 });
+  const allComplain = await complaintRepository.find({
+    where: [
+      { tenantId: id, isDeleted: false },
+      { agentId: id, isDeleted: false },
+    ],
+    order: { createdAt: "DESC" },
+  });
 
   if (!allComplain) {
     throw new CustomError(
@@ -95,7 +103,10 @@ export const allComplainForCompanyallComplain = async (req) => {
     );
   }
 
-  const allComplain = await Complaint.find({ tenantId, isDeleted: false }).sort({ createdAt: -1 });
+  const allComplain = await complaintRepository.find({
+    where: { tenantId, isDeleted: false },
+    order: { createdAt: "DESC" },
+  });
 
   if (!allComplain) {
     throw new CustomError(
@@ -110,11 +121,10 @@ export const allComplainForCompanyallComplain = async (req) => {
 export const editComplain = async (req, res, next) => {
   const ComplaintId = req.query.id;
   const updateData = req.body;
-  const editComplain = await Complaint.findByIdAndUpdate(
-    ComplaintId,
-    updateData,
-    { new: true, runValidators: true }
-  )
+  const complain = await complaintRepository.findOne({ where: { id: ComplaintId } });
+  const editComplain = complain
+    ? await complaintRepository.save(Object.assign(complain, updateData))
+    : null;
 
   if (!updateData) {
     return new CustomError(
@@ -129,7 +139,7 @@ export const editComplain = async (req, res, next) => {
 export const deleteComplain = async (req, res) => {
   const compalainId = req.query.id;
 
-  const complain = await Complaint.findById(compalainId);
+  const complain = await complaintRepository.findOne({ where: { id: compalainId } });
   if (!complain) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -139,14 +149,14 @@ export const deleteComplain = async (req, res) => {
   }
 
   complain.isDeleted = true;
-  await complain.save();
+  await complaintRepository.save(complain);
   return complain;
 };
 
 export const resolveComplain = async (req, res) => {
   const compalainId = req.query.id;
 
-  const complain = await Complaint.findById(compalainId);
+  const complain = await complaintRepository.findOne({ where: { id: compalainId } });
   if (!complain) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -157,7 +167,7 @@ export const resolveComplain = async (req, res) => {
 
   complain.status = !complain.status;
 
-  await complain.save();
+  await complaintRepository.save(complain);
   return complain;
 };
 
@@ -166,7 +176,7 @@ export const addCommentToComplain = async (req, res) => {
   const { id } = req.query;
   const { comment } = req.body;
 
-  const complain = await Complaint.findById(id);
+  const complain = await complaintRepository.findOne({ where: { id } });
   if (!complain) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -177,7 +187,7 @@ export const addCommentToComplain = async (req, res) => {
 
   complain.comment = comment || complain.comment;
 
-  await complain.save();
+  await complaintRepository.save(complain);
   return complain;
 };
 
@@ -190,11 +200,10 @@ export const fetchComplainById = async (req, res) => {
       errorCodes.missing_id
     );
   }
-  const complain = await Complaint.find({ _id: complainId, isDeleted: false })
-    .populate("tenantId")
-    .populate("propertyId")
-    .populate("companyId")
-    .lean();
+  const complain = await complaintRepository.find({
+    where: { id: complainId, isDeleted: false },
+    relations: ["tenant", "property", "company"],
+  });
 
   if (!complain) {
     throw new CustomError(
@@ -218,15 +227,14 @@ export const allComplainForCompany = async (req, res) => {
   }
 
 
-  const allComplain = await Complaint.find({
-    companyId,
-    isDeleted: false,
-  })
-    .populate("tenantId")
-    .populate("propertyId", "propertyname")
-    .populate("assignedId", "staffName") // make sure you're populating the correct field
-    .sort({ createdAt: -1 })
-    .lean();
+  const allComplain = await complaintRepository.find({
+    where: {
+      companyId,
+      isDeleted: false,
+    },
+    relations: ["tenant", "property", "assignedStaff"],
+    order: { createdAt: "DESC" },
+  });
 
   if (!allComplain) {
     throw new CustomError(
@@ -250,12 +258,15 @@ export const getAllComplainCompanyAgent = async (req, res) => {
   }
 
 
-  const allComplain = await Complaint.find({ companyId, isDeleted: false, agentId: { $exists: true } })
-    .populate("tenantId")
-    .populate("agentId")
-    .populate("propertyId", "propertyname")
-    .sort({ createdAt: -1 })
-    .lean();
+  const allComplain = await complaintRepository.find({
+    where: {
+      companyId,
+      isDeleted: false,
+      agentId: Not(IsNull()),
+    },
+    relations: ["tenant", "agent", "property"],
+    order: { createdAt: "DESC" },
+  });
 
   if (!allComplain) {
     throw new CustomError(
@@ -273,7 +284,7 @@ export const assignStaffToTenant = async (req, res) => {
   const complaintId = req.query.id;
   const { staffId, staffName } = req.body;
 
-  const complain = await Complaint.findById(complaintId);
+  const complain = await complaintRepository.findOne({ where: { id: complaintId } });
 
   if (!complain) {
     return new CustomError(
@@ -287,6 +298,6 @@ export const assignStaffToTenant = async (req, res) => {
   complain.assignedName = staffName;
   complain.status = true;
 
-  await complain.save();
+  await complaintRepository.save(complain);
   return complain
 }

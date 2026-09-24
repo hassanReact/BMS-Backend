@@ -1,5 +1,7 @@
-import extraService from "../models/extracharge.model.js";
+import AppDataSource from "../core/database/data-source.js";
 import { errorCodes, Message, statusCodes } from "../core/common/constant.js";
+
+const extraChargeRepository = AppDataSource.getRepository("ExtraCharge");
 
 export const createExtraCharge = async (req, res) => {
   const {
@@ -9,23 +11,25 @@ export const createExtraCharge = async (req, res) => {
     companyId
   } = req.body;
 
-  const extraCharge = await extraService.create({
+  const extraCharge = extraChargeRepository.create({
     serviceName,
     details,
     price,
     companyId
   });
+  await extraChargeRepository.save(extraCharge);
   return extraCharge;
 };
 
 export const editExtraAmount = async(req, res, next) => {
   const id = req.query.id;
   const updateData = req.body; 
-  const editExtraAmount = await extraService.findByIdAndUpdate(
-    id,
-    updateData,
-    { new: true, runValidators: true } 
-  ) 
+  const extraCharge = await extraChargeRepository.findOne({
+    where: { id }
+  });
+  const editExtraAmount = extraCharge
+    ? await extraChargeRepository.save(extraChargeRepository.merge(extraCharge, updateData))
+    : null;
 
   if (!updateData) {
     return new CustomError(
@@ -39,8 +43,10 @@ export const editExtraAmount = async(req, res, next) => {
 
 export const getAllExtraCharge = async (req) => {
   const companyId = req.query.id;
-  const allExtraCharge  = await extraService.find({companyId:companyId, isDeleted: false})
-  .sort({ createdAt: -1 })
+  const allExtraCharge = await extraChargeRepository.find({
+    where: { companyId, isDeleted: false },
+    order: { createdAt: "DESC" }
+  });
 
   if (!allExtraCharge) {
     throw new CustomError(
@@ -55,7 +61,9 @@ export const getAllExtraCharge = async (req) => {
 
 export const getExtraChargeDetailsById = async(req, res, next) => {
   const extrachargeId = req.query.id;
-  const extraCharge = await extraService.find({ _id:extrachargeId, isDeleted: false })
+  const extraCharge = await extraChargeRepository.find({
+    where: { id: extrachargeId, isDeleted: false }
+  });
   if (!extraCharge  ) {
     return new CustomError(
       statusCodes?.notFound,
@@ -69,7 +77,9 @@ export const getExtraChargeDetailsById = async(req, res, next) => {
 export const deleteExtraCharge = async (req, res) => {
   const {id} = req.query;
 
-  const announcement = await extraService.findById({_id:id});
+  const announcement = await extraChargeRepository.findOne({
+    where: { id }
+  });
   if (!announcement) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -79,6 +89,6 @@ export const deleteExtraCharge = async (req, res) => {
   }
 
   announcement.isDeleted = true;
-  await announcement.save();
+  await extraChargeRepository.save(announcement);
   return announcement ;
 };

@@ -7,7 +7,7 @@ const ownerSchema = new Schema(
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      required: true, 
     },
     ownerName: {
       type: String
