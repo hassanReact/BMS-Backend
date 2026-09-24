@@ -23,7 +23,7 @@ const initializeRoles = async () => {
     }
   }
 
-  console.log("✅ Default roles initialized successfully");
+  console.log("Default roles initialized successfully");
 };
 
 export default initializeRoles;
