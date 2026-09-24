@@ -20,7 +20,7 @@ class AccountingMigration {
    */
   async migrateAll(companyId) {
     try {
-      console.log('🚀 Starting Accounting Module Migration...');
+      console.log('Starting Accounting Module Migration...');
       
       // Step 1: Migrate Accounts Receivable
       await this.migrateAccountsReceivable(companyId);
@@ -34,11 +34,11 @@ class AccountingMigration {
       // Step 4: Generate migration report
       this.generateMigrationReport();
       
-      console.log('✅ Migration completed successfully!');
+      console.log('Migration completed successfully!');
       return { success: true, log: this.migrationLog, errors: this.errors };
       
     } catch (error) {
-      console.error('❌ Migration failed:', error);
+      console.error('Migration failed:', error);
       this.errors.push({ step: 'Migration', error: error.message });
       return { success: false, log: this.migrationLog, errors: this.errors };
     }
@@ -49,7 +49,7 @@ class AccountingMigration {
    */
   async migrateAccountsReceivable(companyId) {
     try {
-      console.log('📥 Migrating Accounts Receivable...');
+      console.log('Migrating Accounts Receivable...');
       
       const arRecords = await AccountsReceivable.find({ 
         companyId, 
@@ -111,7 +111,7 @@ class AccountingMigration {
         }
       }
       
-      console.log(`✅ Migrated ${migratedCount} AR records`);
+      console.log(`Migrated ${migratedCount} AR records`);
       this.migrationLog.push({
         step: 'Accounts Receivable Migration',
         count: migratedCount,
@@ -128,7 +128,7 @@ class AccountingMigration {
    */
   async migrateAccountsPayable(companyId) {
     try {
-      console.log('📤 Migrating Accounts Payable...');
+      console.log('Migrating Accounts Payable...');
       
       const apRecords = await AccountsPayable.find({ 
         companyId, 
@@ -188,7 +188,7 @@ class AccountingMigration {
         }
       }
       
-      console.log(`✅ Migrated ${migratedCount} AP records`);
+      console.log(`Migrated ${migratedCount} AP records`);
       this.migrationLog.push({
         step: 'Accounts Payable Migration',
         count: migratedCount,
@@ -205,7 +205,7 @@ class AccountingMigration {
    */
   async migrateExistingVouchers(companyId) {
     try {
-      console.log('📋 Migrating existing Vouchers...');
+      console.log('Migrating existing Vouchers...');
       
       const existingVouchers = await AccountsVoucher.find({ 
         companyId, 
@@ -268,7 +268,7 @@ class AccountingMigration {
         }
       }
       
-      console.log(`✅ Migrated ${migratedCount} existing vouchers`);
+      console.log(`Migrated ${migratedCount} existing vouchers`);
       this.migrationLog.push({
         step: 'Existing Vouchers Migration',
         count: migratedCount,
@@ -327,7 +327,7 @@ class AccountingMigration {
    * Generate migration report
    */
   generateMigrationReport() {
-    console.log('\n📊 Migration Report:');
+    console.log('\n Migration Report:');
     console.log('==================');
     
     this.migrationLog.forEach(log => {
@@ -337,13 +337,13 @@ class AccountingMigration {
     });
     
     if (this.errors.length > 0) {
-      console.log(`\n⚠️  Errors encountered: ${this.errors.length}`);
+      console.log(`\n  Errors encountered: ${this.errors.length}`);
       this.errors.forEach(error => {
         console.log(`- ${error.type}: ${error.error}`);
       });
     }
     
-    console.log('\n🎯 Migration completed!');
+    console.log('\n Migration completed!');
   }
 
   /**
@@ -351,18 +351,18 @@ class AccountingMigration {
    */
   async rollback(companyId) {
     try {
-      console.log('🔄 Rolling back migration...');
+      console.log(' Rolling back migration...');
       
       const deletedCount = await UnifiedVoucher.deleteMany({
         companyId,
         tags: { $in: ['Migration'] }
       });
       
-      console.log(`✅ Rolled back ${deletedCount.deletedCount} migrated records`);
+      console.log(` Rolled back ${deletedCount.deletedCount} migrated records`);
       return { success: true, deletedCount: deletedCount.deletedCount };
       
     } catch (error) {
-      console.error('❌ Rollback failed:', error);
+      console.error(' Rollback failed:', error);
       return { success: false, error: error.message };
     }
   }
