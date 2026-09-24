@@ -1,10 +1,10 @@
 
-import ServiceProvider from "../models/serviceprovider.model.js";
+import AppDataSource from "../core/database/data-source.js";
 import { errorCodes, Message, statusCodes } from "../core/common/constant.js";
 import CustomError from "../utils/exception.js";
-import AccountsPayable from "../models/accountsPayable.model.js";
-import AccountsVoucher from "../models/accountsVoucher.model.js";
-import UnifiedVoucher from "../models/UnifiedVoucher.model.js";
+
+const serviceProviderRepository = AppDataSource.getRepository("ServiceProvider");
+const unifiedVoucherRepository = AppDataSource.getRepository("UnifiedVoucher");
 
 
 export const createServiceProvider = async (req, res) => {
@@ -19,10 +19,10 @@ export const createServiceProvider = async (req, res) => {
     companyId
   } = req.body;
 
-  const agreement = req.file ? `uploads/purchaseBills/serviceAgreement/${req.file.filename}` : null;
+  const agreement = req.file ? `uploads/purchaseBills/serviceAgreement/${req.file.filename}`: null;
   console.log("Agreement :", agreement);
 
-  const serviceProvider = await ServiceProvider.create({
+  const serviceProvider = serviceProviderRepository.create({
     name,
     numOfStaff,
     phoneNo,
@@ -32,6 +32,7 @@ export const createServiceProvider = async (req, res) => {
     agreement,
     companyId
   });
+  await serviceProviderRepository.save(serviceProvider);
 
   return serviceProvider
 };
@@ -65,11 +66,10 @@ export const editServiceProvider = async (req, res) => {
     monthlyCharges,
     companyId
   };
-  const updatedServiceProvider = await ServiceProvider.findByIdAndUpdate(
-    serviceProviderId,
-    updateData,
-    { new: true, runValidators: true }
-  );
+  const serviceProvider = await serviceProviderRepository.findOne({ where: { id: serviceProviderId } });
+  const updatedServiceProvider = serviceProvider
+    ? await serviceProviderRepository.save(Object.assign(serviceProvider, updateData))
+    : null;
 
   if (!updatedServiceProvider) {
     return res.status(404).json({
@@ -85,7 +85,7 @@ export const editServiceProvider = async (req, res) => {
 export const deleteServiceProvider = async (req, res) => {
   const serviceProvider = req.query.id;
 
-  const serviceProviderData = await ServiceProvider.findById(serviceProvider);
+  const serviceProviderData = await serviceProviderRepository.findOne({ where: { id: serviceProvider } });
   if (!serviceProviderData) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -95,7 +95,7 @@ export const deleteServiceProvider = async (req, res) => {
   }
 
   serviceProviderData.isDeleted = true;
-  await serviceProviderData.save();
+  await serviceProviderRepository.save(serviceProviderData);
 
   return serviceProviderData
 };
@@ -103,10 +103,13 @@ export const deleteServiceProvider = async (req, res) => {
 export const getServiceProviders = async (req, res) => {
   const companyId = req.query.id;
 
-  const serviceProvider = await ServiceProvider.find({
-    companyId,
-    isDeleted: false,
-  }).sort({ createdAt: -1 });
+  const serviceProvider = await serviceProviderRepository.find({
+    where: {
+      companyId,
+      isDeleted: false,
+    },
+    order: { createdAt: "DESC" },
+  });
 
   if (!serviceProvider) {
     throw new CustomError(
@@ -130,7 +133,7 @@ export const postInvoice = async (req, res) => {
   }
 
   // Check if service provider exists
-  const serviceProvider = await ServiceProvider.findById(data.serviceId);
+  const serviceProvider = await serviceProviderRepository.findOne({ where: { id: data.serviceId } });
   if (!serviceProvider) {
     throw new CustomError(
       Message.invalidId,
@@ -166,10 +169,12 @@ export const postInvoice = async (req, res) => {
       particulars: data.particulars || `Service invoice from ${serviceProvider.name}`,
       debit: debit,
       credit: credit,
-      "amount.total": data.payment,
-      "amount.balance": data.payment,
+      amount: {
+        total: data.payment,
+        balance: data.payment
+      },
       sourceDocument: {
-        referenceId: serviceProvider._id,
+        referenceId: serviceProvider.id,
         referenceModel: 'ServiceProvider'
       },
       tags: ['ServiceProvider', 'Invoice'],
@@ -178,7 +183,8 @@ export const postInvoice = async (req, res) => {
       details: data.details || `Invoice for services provided by ${serviceProvider.name}`
     };
 
-    const unifiedVoucher = await UnifiedVoucher.create(voucherData);
+    const unifiedVoucher = unifiedVoucherRepository.create(voucherData);
+    await unifiedVoucherRepository.save(unifiedVoucher);
 
     if (!unifiedVoucher) {
       throw new CustomError(

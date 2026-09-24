@@ -1,19 +1,13 @@
-import Tenant from "../models/tenant.model.js";
 import { errorCodes, Message, statusCodes } from "../core/common/constant.js";
 import CustomError from "../utils/exception.js";
-import Booking from "../models/booking,model.js";
-import Agent from "../models/staff.model.js";
-import Company from "../models/company.model.js";
-import TenantDocs from "../models/tenantDocs.model.js";
 import {sendEmail} from "../core/helpers/mail.js";
 import ExcelJS from 'exceljs';
-import bcrypt from 'bcrypt';
 import sendWhatsApp from "../core/helpers/twillio.js"
-import Property from "../models/property.model.js";
-import mongoose from "mongoose";
-import User from "../models/user.model.js";
-import Role from "../models/role.model.js";
-import UserRole from "../models/userRole.model.js";
+import AppDataSource from "../core/database/data-source.js";
+import { hashPassword, comparePassword } from "./user.services.js";
+import jwt from "jsonwebtoken";
+
+const getRepository = (entityName) => AppDataSource.getRepository(entityName);
 
 
 export const createTenant = async (req) => {
@@ -29,17 +23,16 @@ export const createTenant = async (req) => {
     companyId,
   } = req.body;
 
-  const session = await mongoose.startSession();
+  let createdTenant;
 
-  try {
-    let createdTenant;
-
-    await session.withTransaction(async () => {
+  await AppDataSource.transaction(async (transactionalEntityManager) => {
+    const roleRepository = transactionalEntityManager.getRepository("Role");
+    const userRepository = transactionalEntityManager.getRepository("User");
+    const userRoleRepository = transactionalEntityManager.getRepository("UserRole");
+    const tenantRepository = transactionalEntityManager.getRepository("Tenant");
 
       // 1. Find Tenant role
-      const tenantRole = await Role.findOne({
-        name: "Tenant",
-      }).session(session);
+      const tenantRole = await roleRepository.findOne({ where: { name: "Tenant" } });
 
       if (!tenantRole) {
         throw new CustomError(
@@ -50,10 +43,9 @@ export const createTenant = async (req) => {
       }
 
       // 2. Find existing User
-      let user = await User.findOne({
-        email: email.toLowerCase().trim(),
-        isDeleted: false,
-      }).session(session);
+      let user = await userRepository.findOne({
+        where: { email: email.toLowerCase().trim(), isDeleted: false },
+      });
 
       if(user){
         throw new CustomError(
@@ -65,57 +57,41 @@ export const createTenant = async (req) => {
 
       // 3. Create User only if it doesn't exist
       if (!user) {
-        const createdUsers = await User.create(
-          [
-            {
-              fullname: tenantName,
-              email: email.toLowerCase().trim(),
-              password,
-              phoneNo: phoneno,
-            },
-          ],
-          { session }
-        );
-
-        user = createdUsers[0];
+        user = userRepository.create({
+          fullname: tenantName,
+          email: email.toLowerCase().trim(),
+          password: await hashPassword(password),
+          phoneNo: phoneno,
+        });
+        await userRepository.save(user);
       }
 
 
       // 5. Create UserRole
-      await UserRole.create(
-        [
-          {
-            userId: user._id,
-            roleId: tenantRole._id,
-            companyId,
-          },
-        ],
-        { session }
-      );
+      const userRole = userRoleRepository.create({
+        userId: user.id,
+        roleId: tenantRole.id,
+        companyId,
+      });
+      await userRoleRepository.save(userRole);
 
       // 6. Create Tenant profile
-      const tenants = await Tenant.create(
-        [
-          {
-            userId: user._id,
-            tenantName,
-            email: user.email,
-            phoneno,
-            identityCardType,
-            identityNo,
-            address,
-            reporterId,
-            companyId,
-          },
-        ],
-        { session }
-      );
-
-      createdTenant = tenants[0];
-    });
+      createdTenant = tenantRepository.create({
+        userId: user.id,
+        tenantName,
+        email: user.email,
+        phoneno,
+        identityCardType,
+        identityNo,
+        address,
+        reporterId,
+        companyId,
+      });
+      await tenantRepository.save(createdTenant);
+  });
 
     // External operations AFTER transaction
-    const companyDetails = await Company.findById(companyId);
+    const companyDetails = await getRepository("Company").findOne({ where: { id: companyId } });
 
     if (
       companyDetails &&
@@ -133,13 +109,7 @@ export const createTenant = async (req) => {
       await sendWhatsAppMessage(createdTenant, companyDetails);
     }
 
-    return await Tenant.findById(createdTenant._id).select(
-      "-password -refreshToken"
-    );
-
-  } finally {
-    await session.endSession();
-  }
+    return await getRepository("Tenant").findOne({ where: { id: createdTenant.id } });
 };
 
 const sendWhatsAppMessage = async (tenant, CompanyDetails) => {
@@ -209,7 +179,7 @@ const sendEmailToTenant = async (tenant, CompanyDetails) => {
       tenant?.email,
       "Welcome to Your New Home - Tenant Registration Details",
       tenantDetails,
-      CompanyDetails._id
+      CompanyDetails.id
     );
   } catch (err) {
     console.error("Failed to send tenant registration email:", err);
@@ -219,12 +189,32 @@ const sendEmailToTenant = async (tenant, CompanyDetails) => {
 
 const generateAccessAndRefreshTokens = async (userId) => {
   try {
-    const tenant = await Tenant.findById(userId);
-    const accessToken = tenant.generateAccessToken();
-    const refreshToken = tenant.generateRefreshToken();
+    const tenant = await getRepository("Tenant").findOne({ where: { id: userId } });
+    const user = tenant
+      ? await getRepository("User").findOne({ where: { id: tenant.userId } })
+      : null;
+    const userRole = user
+      ? await getRepository("UserRole").findOne({
+          where: { userId: user.id, status: "active" },
+          relations: { role: true, company: true },
+        })
+      : null;
+    const payload = {
+      userId: user.id,
+      email: user.email,
+      role: userRole?.role?.name,
+      roleId: userRole?.role?.id,
+      companyId: userRole?.company?.id || null,
+    };
+    const accessToken = jwt.sign(payload, process.env.ACCESS_TOKEN_SECRET, {
+      expiresIn: process.env.ACCESS_TOKEN_EXPIRY,
+    });
+    const refreshToken = jwt.sign(payload, process.env.REFRESH_TOKEN_SECRET, {
+      expiresIn: process.env.REFRESH_TOKEN_EXPIRY,
+    });
 
-    tenant.refreshToken = refreshToken;
-    await tenant.save({ validateBeforeSave: false });
+    user.refreshToken = refreshToken;
+    await getRepository("User").save(user);
     return { accessToken, refreshToken };
   } catch (error) {
     throw new CustomError(
@@ -238,7 +228,7 @@ const generateAccessAndRefreshTokens = async (userId) => {
 export const loginTenant = async (req, res) => {
   const { email, password } = req.body;
 
-  const tenant = await Tenant.findOne({ email });
+  const tenant = await getRepository("Tenant").findOne({ where: { email } });
   if (!tenant) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -247,7 +237,8 @@ export const loginTenant = async (req, res) => {
     );
   }
 
-  const passwordVerify = await tenant.isPasswordCorrect(password);
+  const user = await getRepository("User").findOne({ where: { id: tenant.userId } });
+  const passwordVerify = await comparePassword(password, user.password);
 
   if (!passwordVerify) {
     throw new CustomError(
@@ -258,12 +249,10 @@ export const loginTenant = async (req, res) => {
   }
 
   const { accessToken, refreshToken } = await generateAccessAndRefreshTokens(
-    tenant._id
+    tenant.id
   );
 
-  const loginTenant = await Tenant.findById(tenant._id).select(
-    "-password -refreshToken"
-  );
+  const loginTenant = await getRepository("Tenant").findOne({ where: { id: tenant.id } });
 
   res.setHeader("token", accessToken);
 
@@ -283,11 +272,10 @@ export const loginTenant = async (req, res) => {
 export const getTenants = async (req, res, next) => {
   const { id: companyId } = req.query;
 
-  const tenants = await Tenant.find({
-    companyId,
-    //isOccupied: false,
-    isDeleted: false,
-  }).sort({ createdAt: -1 });
+  const tenants = await getRepository("Tenant").find({
+    where: { companyId, isDeleted: false },
+    order: { createdAt: "DESC" },
+  });
 
   if (!tenants) {
     throw new CustomError(
@@ -303,11 +291,11 @@ export const getTenants = async (req, res, next) => {
 export const mybooking = async (req, res, next) => {
   const Id = req.query.id;
 
-  const tenantBooking = await Booking.find({ tenantId: Id, isDeleted: false })
-    .populate("tenantId", "tenantName")
-    .populate("propertyId", "propertyname")
-    .sort({ createdAt: -1 })
-    .lean();
+  const tenantBooking = await getRepository("Booking").find({
+    where: { tenantId: Id, isDeleted: false },
+    relations: { tenant: true, property: true },
+    order: { createdAt: "DESC" },
+  });
 
   if (!tenantBooking) {
     throw new CustomError(
@@ -321,17 +309,23 @@ export const mybooking = async (req, res, next) => {
   for (const booking of tenantBooking) {
     const createdBy = booking.createdBy;
 
-    let creater = await Agent.findById(createdBy);
+    let creater = await getRepository("Agent").findOne({ where: { id: createdBy } });
     let name;
     if (creater) {
       name = creater.agentName;
     } else {
-      creater = await Company.findById(createdBy);
+      creater = await getRepository("Company").findOne({ where: { id: createdBy } });
       if (creater) {
         name = creater.companyName;
       }
     }
-    finalResponse.push({ name, ...booking });
+    const { tenant, property, ...bookingData } = booking;
+    finalResponse.push({
+      name,
+      ...bookingData,
+      tenantId: tenant,
+      propertyId: property,
+    });
   }
 
   return finalResponse;
@@ -340,10 +334,11 @@ export const mybooking = async (req, res, next) => {
 export const myproperties = async (req, res, next) => {
   const Id = req.query.id;
 
-  const propertyData = await Property.find({ tenantId: Id, isDeleted: false, isVacant: false })
-    .populate("tenantId", "tenantName")
-    .sort({ createdAt: -1 })
-    .lean();
+  const propertyData = await getRepository("Property").find({
+    where: { tenantId: Id, isDeleted: false, isVacant: false },
+    relations: { tenant: true },
+    order: { createdAt: "DESC" },
+  });
 
   if (!propertyData) {
     throw new CustomError(
@@ -357,17 +352,22 @@ export const myproperties = async (req, res, next) => {
   for (const properties of propertyData) {
     const createdBy = properties.createdBy;
 
-    let creater = await Agent.findById(createdBy);
+    let creater = await getRepository("Agent").findOne({ where: { id: createdBy } });
     let name;
     if (creater) {
       name = creater.agentName;
     } else {
-      creater = await Company.findById(createdBy);
+      creater = await getRepository("Company").findOne({ where: { id: createdBy } });
       if (creater) {
         name = creater.companyName;
       }
     }
-    finalResponse.push({ name, ...properties });
+    const { tenant, ...propertyData } = properties;
+    finalResponse.push({
+      name,
+      ...propertyData,
+      tenantId: tenant,
+    });
   }
 
   return finalResponse;
@@ -385,10 +385,11 @@ export const editTenant = async (req, res) => {
     );
   }
 
-  const updatedTenant = await Tenant.findByIdAndUpdate(tenantId, updateData, {
-    new: true,
-    runValidators: true,
-  }).select("-password -refreshToken");
+  const tenantRepository = getRepository("Tenant");
+  const tenant = await tenantRepository.findOne({ where: { id: tenantId } });
+  const updatedTenant = tenant
+    ? await tenantRepository.save(Object.assign(tenant, updateData))
+    : null;
 
   if (!updatedTenant) {
     throw new CustomError(
@@ -403,7 +404,7 @@ export const editTenant = async (req, res) => {
 export const deleteTenantById = async (req, res) => {
   const tenantId = req.query.id;
 
-  const tenant = await Tenant.findById(tenantId);
+  const tenant = await getRepository("Tenant").findOne({ where: { id: tenantId } });
   if (!tenant) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -413,7 +414,7 @@ export const deleteTenantById = async (req, res) => {
   }
 
   tenant.isDeleted = true;
-  await tenant.save();
+  await getRepository("Tenant").save(tenant);
 
   return tenant;
 };
@@ -428,7 +429,7 @@ export const getTenantsById = async (req, res, next) => {
       errorCodes?.invalid_request
     );
   }
-  const tenant = await Tenant.findOne({_id:id, isDeleted: false});
+  const tenant = await getRepository("Tenant").findOne({ where: { id, isDeleted: false } });
 
   if (!tenant) {
     throw new CustomError(
@@ -438,13 +439,16 @@ export const getTenantsById = async (req, res, next) => {
     );
   }
 
-  const bookings = await Booking.find({ tenantId: id , isDeleted: false }).populate("propertyId");
+  const bookings = await getRepository("Booking").find({
+    where: { tenantId: id, isDeleted: false },
+    relations: { property: true },
+  });
 
   const formattedBookings = bookings.map((bookingData) => ({
-    propertyName: bookingData.propertyId?.propertyname,
-    description: bookingData.propertyId?.description,
-    rent: bookingData.propertyId?.rent,
-    address: bookingData.propertyId.address,
+    propertyName: bookingData.property?.propertyname,
+    description: bookingData.property?.description,
+    rent: bookingData.property?.rent,
+    address: bookingData.property?.address,
   }));
   return {
     tenant,
@@ -455,12 +459,10 @@ export const getTenantsById = async (req, res, next) => {
 export const getAllTenants = async (req, res, next) => {
   const { id: companyId } = req.query;
 
-  const tenants = await Tenant.find({
-    companyId,
-    isDeleted: false,
-  })
-    .lean()
-    .sort({ createdAt: -1 });
+  const tenants = await getRepository("Tenant").find({
+    where: { companyId, isDeleted: false },
+    order: { createdAt: "DESC" },
+  });
 
   if (!tenants) {
     throw new CustomError(
@@ -474,12 +476,12 @@ export const getAllTenants = async (req, res, next) => {
   for (const tenat of tenants) {
     const reporterId = tenat.reporterId;
 
-    let creater = await Agent.findById(reporterId);
+    let creater = await getRepository("Agent").findOne({ where: { id: reporterId } });
     let Creater;
     if (creater) {
       Creater = creater.agentName;
     } else {
-      creater = await Company.findById(reporterId);
+      creater = await getRepository("Company").findOne({ where: { id: reporterId } });
       if (creater) {
         Creater = creater.companyName;
       }
@@ -493,12 +495,12 @@ export const getAllTenants = async (req, res, next) => {
 export const getAllDocs = async (req, res, next) => {
   const { id: tenantId } = req.query;
 
-  console.log(tenantId);
+  // console.log(tenantId);
 
-  const tenantsDocs = await TenantDocs.find({
-    tenantId,
-    // isDeleted: false,
-  }).sort({ createdAt: -1 });
+  const tenantsDocs = await getRepository("TenantDocs").find({
+    where: { tenantId },
+    order: { createdAt: "DESC" },
+  });
 
   if (!tenantsDocs) {
     throw new CustomError(
@@ -516,11 +518,13 @@ export const uploadDocuments = async (req, res, next) => {
 
   const { name, tenantId } = req.body;
 
-  const document = await TenantDocs.create({
+  const tenantDocsRepository = getRepository("TenantDocs");
+  const document = tenantDocsRepository.create({
     tenantId,
     documentName: name,
     url: `uploads/${req.file.filename}`,
   });
+  await tenantDocsRepository.save(document);
 
   if (!document) {
     throw new CustomError(
@@ -535,9 +539,10 @@ export const uploadDocuments = async (req, res, next) => {
 
 export const getMyTenants = async (req, res) => {
   const id = req.query.id;
-  const tenant = await Tenant.find({ reporterId: id, isDeleted: false })
-    .lean()
-    .sort({ createdAt: -1 });
+  const tenant = await getRepository("Tenant").find({
+    where: { reporterId: id, isDeleted: false },
+    order: { createdAt: "DESC" },
+  });
   if (!tenant) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -550,12 +555,12 @@ export const getMyTenants = async (req, res) => {
   for (const tenat of tenant) {
     const reporterId = tenat.reporterId;
 
-    let creater = await Agent.findById(reporterId);
+    let creater = await getRepository("Agent").findOne({ where: { id: reporterId } });
     let Creater;
     if (creater) {
       Creater = creater.agentName;
     } else {
-      creater = await Company.findById(reporterId);
+      creater = await getRepository("Company").findOne({ where: { id: reporterId } });
       if (creater) {
         Creater = creater.companyName;
       }
@@ -576,7 +581,11 @@ export const getMyTenants = async (req, res) => {
 export const deleteTenantDocs = async (req, res) => {
   const tenantId = req.query.id;
 
-  const tenantDocs = await TenantDocs.findByIdAndDelete(tenantId);
+  const tenantDocsRepository = getRepository("TenantDocs");
+  const tenantDocs = await tenantDocsRepository.findOne({ where: { id: tenantId } });
+  if (tenantDocs) {
+    await tenantDocsRepository.remove(tenantDocs);
+  }
 
   if (!tenantDocs) {
     throw new CustomError(
@@ -635,21 +644,22 @@ export const bulkUploadTenants = async (req) => {
     });
 
     for (const tenant of tenants) {
-        const existingTenant = await Tenant.findOne({
-          $or: [
+        const existingTenant = await getRepository("Tenant").findOne({
+          where: [
             { tenantName: tenant.tenantName, isDeleted: false },
-            { email: tenant.email, isDeleted: false }
-          ]
+            { email: tenant.email, isDeleted: false },
+          ],
         });
 
         if (existingTenant) {
           continue;
         }
 
-        const hashedPassword = await bcrypt.hash(tenant.password, 10);
-        tenant.password = hashedPassword;
+        tenant.password = await hashPassword(tenant.password);
 
-        const newTenant = await Tenant.create(tenant);
+        const tenantRepository = getRepository("Tenant");
+        const newTenant = tenantRepository.create(tenant);
+        await tenantRepository.save(newTenant);
         if (!newTenant) {
           throw new CustomError(
             statusCodes.badRequest,
@@ -677,12 +687,11 @@ export const bulkUploadTenants = async (req) => {
 export const changePassword = async (req) => {
   const { id, newPassword } = req.body;
 
-  const hashedPassword = await bcrypt.hash(newPassword, 10);
+  const hashedPassword = await hashPassword(newPassword);
 
-  const result = await Tenant.findByIdAndUpdate(id, {
-    $set: {
-      password: hashedPassword,
-    },
-  });
+  const userRepository = getRepository("User");
+  const tenant = await getRepository("Tenant").findOne({ where: { id } });
+  const user = tenant ? await userRepository.findOne({ where: { id: tenant.userId } }) : null;
+  const result = user ? await userRepository.save(Object.assign(user, { password: hashedPassword })) : null;
   return result;
 };

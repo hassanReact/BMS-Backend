@@ -1,6 +1,8 @@
-import Block from "../models/block.model.js"
+import AppDataSource from "../core/database/data-source.js";
 import { errorCodes, Message, statusCodes } from "../core/common/constant.js";
 import CustomError from "../utils/exception.js";
+
+const blockRepository = AppDataSource.getRepository("Block");
 
 export const createBlock = async (req, res) => {
     const {
@@ -10,14 +12,13 @@ export const createBlock = async (req, res) => {
         companyId,
     } = req.body;
   
-    const block = await Block.create({
+    const block = blockRepository.create({
         projectId,
         blockName,
         description,
         companyId
       });
-      //const project = await Type.findById(projectId).lean();
-  
+      await blockRepository.save(block);
       return block;
   };
 
@@ -45,11 +46,10 @@ export const createBlock = async (req, res) => {
       description,
       companyId
     };
-    const updatedBlock = await Block.findByIdAndUpdate(
-      blockId,
-      updateData,
-      { new: true, runValidators: true }
-    );
+    const block = await blockRepository.findOne({ where: { id: blockId } });
+    const updatedBlock = block
+      ? await blockRepository.save(Object.assign(block, updateData))
+      : null;
 
     if (!updatedBlock) {
       return res.status(404).json({
@@ -65,7 +65,7 @@ export const createBlock = async (req, res) => {
 export const deleteBlock = async (req, res) => {
     const block = req.query.id;
   
-    const blockData = await Block.findById(block);
+    const blockData = await blockRepository.findOne({ where: { id: block } });
     if (!blockData) {
       throw new CustomError(
         statusCodes?.notFound,
@@ -75,7 +75,7 @@ export const deleteBlock = async (req, res) => {
     } 
   
     blockData.isDeleted = true;
-    await blockData.save();
+    await blockRepository.save(blockData);
   
     return blockData
   };
@@ -83,11 +83,14 @@ export const deleteBlock = async (req, res) => {
   export const getBlock = async (req, res) => {
     const companyId = req.query.id;
   
-    const block = await Block.find({
-      companyId,
-      isDeleted: false,
-    }).sort({ createdAt: -1 })
-    .populate('projectId');
+    const block = await blockRepository.find({
+      where: {
+        companyId,
+        isDeleted: false,
+      },
+      order: { createdAt: "DESC" },
+      relations: ["project"],
+    });
   
     if (!block) {
       throw new CustomError(

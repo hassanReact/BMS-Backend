@@ -1,16 +1,11 @@
 import { errorCodes, Message, statusCodes } from "../core/common/constant.js";
 import CustomError from "../utils/exception.js";
-import Booking from "../models/booking,model.js";
-import Tenant from "../models/tenant.model.js";
-import Company from "../models/company.model.js";
 import { sendEmail } from "../core/helpers/mail.js";
-import bcrypt from 'bcrypt';
-import staff from "../models/staff.model.js";
-import Complaint from "../models/complaints.model.js";
-import mongoose from "mongoose";
-import User from "../models/user.model.js";
-import Role from "../models/role.model.js";
-import UserRole from "../models/userRole.model.js";
+import AppDataSource from "../core/database/data-source.js";
+import { hashPassword, comparePassword } from "./user.services.js";
+import jwt from "jsonwebtoken";
+
+const getRepository = (entityName) => AppDataSource.getRepository(entityName);
 
 
 export const createStaff = async (req) => {
@@ -28,17 +23,16 @@ export const createStaff = async (req) => {
 
   const normalizedEmail = email.toLowerCase().trim();
 
-  const session = await mongoose.startSession();
+  let newStaff;
 
-  try {
-    let newStaff;
-
-    await session.withTransaction(async () => {
+  await AppDataSource.transaction(async (transactionalEntityManager) => {
+    const roleRepository = transactionalEntityManager.getRepository("Role");
+    const userRepository = transactionalEntityManager.getRepository("User");
+    const userRoleRepository = transactionalEntityManager.getRepository("UserRole");
+    const staffRepository = transactionalEntityManager.getRepository("Staff");
 
       // 1. Find Staff role
-      const staffRole = await Role.findOne({
-        name: "Staff",
-      }).session(session);
+      const staffRole = await roleRepository.findOne({ where: { name: "Staff" } });
 
       if (!staffRole) {
         throw new CustomError(
@@ -49,10 +43,9 @@ export const createStaff = async (req) => {
       }
 
       // 2. Find existing User
-      let user = await User.findOne({
-        email: normalizedEmail,
-        isDeleted: false,
-      }).session(session);
+      let user = await userRepository.findOne({
+        where: { email: normalizedEmail, isDeleted: false },
+      });
 
       if(user){
         throw new CustomError(
@@ -64,58 +57,42 @@ export const createStaff = async (req) => {
 
       // 3. Create User if it doesn't exist
       if (!user) {
-        const createdUsers = await User.create(
-          [
-            {
-              fullname: staffName,
-              email: normalizedEmail,
-              password,
-              phoneNo,
-            },
-          ],
-          { session }
-        );
-
-        user = createdUsers[0];
+        user = userRepository.create({
+          fullname: staffName,
+          email: normalizedEmail,
+          password: await hashPassword(password),
+          phoneNo,
+        });
+        await userRepository.save(user);
       }
 
       // 5. Create UserRole
-      await UserRole.create(
-        [
-          {
-            userId: user._id,
-            roleId: staffRole._id,
-            companyId,
-          },
-        ],
-        { session }
-      );
+      const userRole = userRoleRepository.create({
+        userId: user.id,
+        roleId: staffRole.id,
+        companyId,
+      });
+      await userRoleRepository.save(userRole);
 
       // 6. Create Staff profile
-      const createdStaff = await staff.create(
-        [
-          {
-            userId: user._id,
-            staffName,
-            email: normalizedEmail,
-            phoneNo,
-            address,
-            companyId,
-            designation,
-            Salary: salary,
-            cnic,
-          },
-        ],
-        { session }
-      );
-
-      newStaff = createdStaff[0];
-    });
+      newStaff = staffRepository.create({
+        userId: user.id,
+        staffName,
+        email: normalizedEmail,
+        phoneNo,
+        address,
+        companyId,
+        designation,
+        Salary: salary,
+        cnic,
+      });
+      await staffRepository.save(newStaff);
+  });
 
     // Transaction successfully committed.
     // External services happen AFTER commit.
 
-    const companyDetails = await Company.findById(companyId);
+    const companyDetails = await getRepository("Company").findOne({ where: { id: companyId } });
 
     if (
       companyDetails?.isMailStatus
@@ -137,9 +114,6 @@ export const createStaff = async (req) => {
 
     return newStaff;
 
-  } finally {
-    await session.endSession();
-  }
 };
 
 
@@ -147,17 +121,17 @@ const sendWhatsAppMessage = async (tenant, CompanyDetails) => {
   try {
 
     const staffWhatsAppText = `
-👋 Hey ${staff.staffName}!
+👋 Hey ${tenant.staffName}!
 
 Welcome to *${CompanyDetails.companyName}*! 🎉
 
 Thanks for joining us as an *staff*. We're excited to have you on board.
 
 📝 Your Registration Details:
-• 👤 Name: ${staff.staffName}
-• 📧 Email: ${staff.email}
-• 📞 Phone: ${staff.phoneNo}
-• 🏠 Address: ${staff.address}
+• 👤 Name: ${tenant.staffName}
+• 📧 Email: ${tenant.email}
+• 📞 Phone: ${tenant.phoneNo}
+• 🏠 Address: ${tenant.address}
 • 🏢 Company: ${CompanyDetails.companyName}
 
 If you have any questions, feel free to reach out to us at ${CompanyDetails.email}.
@@ -216,7 +190,7 @@ const sendStaffRegistrationEmail = async (staff, CompanyDetails) => {
       staff.email,
       "Welcome to Your New Role - staff Registration Details",
       staffDetails,
-      CompanyDetails._id
+      CompanyDetails.id
     );
   } catch (err) {
     console.error("Failed to send staff registration email:", err);
@@ -225,12 +199,28 @@ const sendStaffRegistrationEmail = async (staff, CompanyDetails) => {
 
 const generateAccessAndRefreshTokens = async (userId) => {
   try {
-    const staff = await staff.findById(userId);
-    const accessToken = staff.generateAccessToken();
-    const refreshToken = staff.generateRefreshToken();
+    const staffUser = await getRepository("Staff").findOne({ where: { id: userId } });
+    const user = staffUser
+      ? await getRepository("User").findOne({ where: { id: staffUser.userId } })
+      : null;
+    const userRole = user
+      ? await getRepository("UserRole").findOne({
+          where: { userId: user.id, status: "active" },
+          relations: { role: true, company: true },
+        })
+      : null;
+    const payload = {
+      userId: user.id,
+      email: user.email,
+      role: userRole?.role?.name,
+      roleId: userRole?.role?.id,
+      companyId: userRole?.company?.id || null,
+    };
+    const accessToken = jwt.sign(payload, process.env.ACCESS_TOKEN_SECRET, { expiresIn: process.env.ACCESS_TOKEN_EXPIRY });
+    const refreshToken = jwt.sign(payload, process.env.REFRESH_TOKEN_SECRET, { expiresIn: process.env.REFRESH_TOKEN_EXPIRY });
 
-    staff.refreshToken = refreshToken;
-    await staff.save({ validateBeforeSave: false });
+    user.refreshToken = refreshToken;
+    await getRepository("User").save(user);
     return { accessToken, refreshToken };
   } catch (error) {
     throw new CustomError(
@@ -246,7 +236,7 @@ const generateAccessAndRefreshTokens = async (userId) => {
 export const loginStaff = async (req, res) => {
   const { email, password } = req.body;
 
-  const staffUser = await staff.findOne({ email });
+  const staffUser = await getRepository("Staff").findOne({ where: { email } });
 
   if (!staffUser) {
     throw new CustomError(
@@ -256,7 +246,8 @@ export const loginStaff = async (req, res) => {
     );
   }
 
-  const passwordVerify = await staffUser.isPasswordCorrect(password);
+  const user = await getRepository("User").findOne({ where: { id: staffUser.userId } });
+  const passwordVerify = await comparePassword(password, user.password);
 
   if (!passwordVerify) {
     throw new CustomError(
@@ -267,12 +258,10 @@ export const loginStaff = async (req, res) => {
   }
 
   const { accessToken, refreshToken } = await generateAccessAndRefreshTokens(
-    staffUser._id
+    staffUser.id
   );
 
-  const loginstaff = await staff.findById(staffUser._id).select(
-    "-password -refreshToken"
-  );
+  const loginstaff = await getRepository("Staff").findOne({ where: { id: staffUser.id } });
 
   res.setHeader("token", accessToken);
 
@@ -292,10 +281,9 @@ export const loginStaff = async (req, res) => {
 export const editStaff = async (req, res, next) => {
   const staffId = req.query.id;
   const updateData = req.body;
-  const editstaff = await staff.findByIdAndUpdate(staffId, updateData, {
-    new: true,
-    runValidators: true,
-  });
+  const staffRepository = getRepository("Staff");
+  const existingStaff = await staffRepository.findOne({ where: { id: staffId } });
+  const editstaff = existingStaff ? await staffRepository.save(Object.assign(existingStaff, updateData)) : null;
   if (!editstaff) {
     return new CustomError(
       statusCodes?.serviceUnavailable,
@@ -316,7 +304,7 @@ export const getAllStaff = async (req) => {
     );
   }
 
-  const company = await Company.findById(companyId);
+  const company = await getRepository("Company").findOne({ where: { id: companyId } });
 
   if(!company || company.isDeleted){
      
@@ -328,10 +316,10 @@ export const getAllStaff = async (req) => {
     }
 
 
-  const allstaff = await staff.find({
-    companyId: companyId,
-    isDeleted: false,
-  }).sort({ createdAt: -1 });
+  const allstaff = await getRepository("Staff").find({
+    where: { companyId, isDeleted: false },
+    order: { createdAt: "DESC" },
+  });
 
   if (!allstaff) {
     throw new CustomError(
@@ -346,7 +334,7 @@ export const getAllStaff = async (req) => {
 export const deleteStaff = async (req, res) => {
   const staffId = req.params.id;
 
-  const existingStaff = await staff.findById(staffId);
+  const existingStaff = await getRepository("Staff").findOne({ where: { id: staffId } });
   if (!existingStaff) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -356,14 +344,14 @@ export const deleteStaff = async (req, res) => {
   }
 
 
-  await staff.findByIdAndUpdate(staffId, { isDeleted: true });
+  await getRepository("Staff").update(staffId, { isDeleted: true });
 
   return existingStaff
 }
 
 export const getStaffById = async (req, res) => {
   const staffId = req.query.id;
-  const Staff = await staff.findById(staffId);
+  const Staff = await getRepository("Staff").findOne({ where: { id: staffId } });
 
   if (!Staff) {
     throw new CustomError(
@@ -373,9 +361,10 @@ export const getStaffById = async (req, res) => {
     );
   }
 
-  const bookings = await Booking.find({ createdBy: staffId })
-    .populate("propertyId")
-    .populate("tenantId");
+  const bookings = await getRepository("Booking").find({
+    where: { createdBy: staffId },
+    relations: { property: true, tenant: true },
+  });
 
   //   const formattedBookings = bookings.map((bookingData) => ({
   //     propertyName: bookingData.propertyId?.propertyname,
@@ -384,11 +373,14 @@ export const getStaffById = async (req, res) => {
   //     address: bookingData.propertyId?.address
   // }));
 
-  const tenant = await Tenant.find({ reporterId: staffId });
+  const tenant = await getRepository("Tenant").find({ where: { reporterId: staffId } });
 
   return {
     Staff,
-    bookings,
+    bookings: bookings.map((booking) => {
+      const { property, tenant, ...bookingData } = booking;
+      return { ...bookingData, propertyId: property, tenantId: tenant };
+    }),
     // booking: formattedBookings,
     tenant,
   };
@@ -398,25 +390,20 @@ export const changePassword = async (req) => {
   const { id, newPassword } = req.body;
 
 
-  const hashedPassword = await bcrypt.hash(newPassword, 10);
-
-  const result = await staff.findByIdAndUpdate(id, {
-    $set: {
-      password: hashedPassword,
-    },
-  });
+  const hashedPassword = await hashPassword(newPassword);
+  const staffUser = await getRepository("Staff").findOne({ where: { id } });
+  const user = staffUser ? await getRepository("User").findOne({ where: { id: staffUser.userId } }) : null;
+  const result = user ? await getRepository("User").save(Object.assign(user, { password: hashedPassword })) : null;
   return result;
 };
 
 export const getAllJobs = async (req) => {
   const assignedId = req.query.id;
 
-  const allJobs = await Complaint.find({ assignedId, isDeleted: false })
-    .populate("assignedId")
-    .populate("tenantId")
-    .populate("propertyId")
-    .populate("companyId")
-    .lean();
+  const allJobs = await getRepository("Complaint").find({
+    where: { assignedId, isDeleted: false },
+    relations: { assignedStaff: true, tenant: true, property: true, company: true },
+  });
 
   if (!allJobs) {
     throw new CustomError(
@@ -426,14 +413,23 @@ export const getAllJobs = async (req) => {
     );
   }
 
-  return allJobs;
+  return allJobs.map((job) => {
+    const { assignedStaff, tenant, property, company, ...jobData } = job;
+    return {
+      ...jobData,
+      assignedId: assignedStaff,
+      tenantId: tenant,
+      propertyId: property,
+      companyId: company,
+    };
+  });
 }
 
 export const changeStatusOfJob = async (req) => {
   const complaintId = req.query.id;
   const { status, staffId } = req.body;
 
-  const Staff = await staff.findOne({ _id: staffId, isDeleted: false });
+  const Staff = await getRepository("Staff").findOne({ where: { id: staffId, isDeleted: false } });
 
   if (!Staff) {
     throw new CustomError(
@@ -448,7 +444,7 @@ export const changeStatusOfJob = async (req) => {
     status,
   });
 
-  Staff.save();
+  await getRepository("Staff").save(Staff);
 
   return Staff;
 } 

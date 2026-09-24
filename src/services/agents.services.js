@@ -1,16 +1,11 @@
-import Agent from "../models/agents.model.js";
-import Property from "../models/property.model.js";
 import { errorCodes, Message, statusCodes } from "../core/common/constant.js";
 import CustomError from "../utils/exception.js";
-import Booking from "../models/booking,model.js";
-import Tenant from "../models/tenant.model.js";
-import Company from "../models/company.model.js";
 import {sendEmail} from "../core/helpers/mail.js";
-import bcrypt from 'bcrypt';
-import mongoose from "mongoose";
-import User from "../models/user.model.js";
-import Role from "../models/role.model.js";
-import UserRole from "../models/userRole.model.js";
+import AppDataSource from "../core/database/data-source.js";
+import { hashPassword, comparePassword } from "./user.services.js";
+import jwt from "jsonwebtoken";
+
+const getRepository = (entityName) => AppDataSource.getRepository(entityName);
 
 export const createAgent = async (req) => {
   const {
@@ -24,17 +19,16 @@ export const createAgent = async (req) => {
 
   const normalizedEmail = email.toLowerCase().trim();
 
-  const session = await mongoose.startSession();
+  let newAgent;
 
-  try {
-    let newAgent;
-
-    await session.withTransaction(async () => {
+  await AppDataSource.transaction(async (transactionalEntityManager) => {
+    const roleRepository = transactionalEntityManager.getRepository("Role");
+    const userRepository = transactionalEntityManager.getRepository("User");
+    const userRoleRepository = transactionalEntityManager.getRepository("UserRole");
+    const agentRepository = transactionalEntityManager.getRepository("Agent");
 
       // 1. Find Agent role
-      const agentRole = await Role.findOne({
-        name: "Agent",
-      }).session(session);
+      const agentRole = await roleRepository.findOne({ where: { name: "Agent" } });
 
       if (!agentRole) {
         throw new CustomError(
@@ -45,10 +39,9 @@ export const createAgent = async (req) => {
       }
 
       // 2. Find existing User
-      let user = await User.findOne({
-        email: normalizedEmail,
-        isDeleted: false,
-      }).session(session);
+      let user = await userRepository.findOne({
+        where: { email: normalizedEmail, isDeleted: false },
+      });
 
       if(user){
         throw new CustomError(
@@ -60,55 +53,39 @@ export const createAgent = async (req) => {
 
       // 3. Create User if it doesn't exist
       if (!user) {
-        const users = await User.create(
-          [
-            {
-              fullname: agentName,
-              email: normalizedEmail,
-              password,
-              phoneNo,
-            },
-          ],
-          { session }
-        );
-
-        user = users[0];
+        user = userRepository.create({
+          fullname: agentName,
+          email: normalizedEmail,
+          password: await hashPassword(password),
+          phoneNo,
+        });
+        await userRepository.save(user);
       }
 
 
       // 5. Assign Agent role
-      await UserRole.create(
-        [
-          {
-            userId: user._id,
-            roleId: agentRole._id,
-            companyId,
-          },
-        ],
-        { session }
-      );
+      const userRole = userRoleRepository.create({
+        userId: user.id,
+        roleId: agentRole.id,
+        companyId,
+      });
+      await userRoleRepository.save(userRole);
 
       // 6. Create Agent profile
-      const agents = await Agent.create(
-        [
-          {
-            userId: user._id,
-            agentName,
-            email: normalizedEmail,
-            phoneNo,
-            address,
-            companyId,
-          },
-        ],
-        { session }
-      );
-
-      newAgent = agents[0];
-    });
+      newAgent = agentRepository.create({
+        userId: user.id,
+        agentName,
+        email: normalizedEmail,
+        phoneNo,
+        address,
+        companyId,
+      });
+      await agentRepository.save(newAgent);
+  });
 
     // Transaction committed successfully
 
-    const companyDetails = await Company.findById(companyId);
+    const companyDetails = await getRepository("Company").findOne({ where: { id: companyId } });
 
     if (companyDetails?.isMailStatus) {
       await sendAgentRegistrationEmail(
@@ -126,26 +103,23 @@ export const createAgent = async (req) => {
 
     return newAgent;
 
-  } finally {
-    await session.endSession();
-  }
 };
 
 const sendWhatsAppMessage = async (tenant, CompanyDetails) => {
   try {
    
     const agentWhatsAppText = `
-👋 Hey ${agent.agentName}!
+👋 Hey ${tenant.agentName}!
 
 Welcome to *${CompanyDetails.companyName}*! 🎉
 
 Thanks for joining us as an *Agent*. We're excited to have you on board.
 
 📝 Your Registration Details:
-• 👤 Name: ${agent.agentName}
-• 📧 Email: ${agent.email}
-• 📞 Phone: ${agent.phoneNo}
-• 🏠 Address: ${agent.address}
+• 👤 Name: ${tenant.agentName}
+• 📧 Email: ${tenant.email}
+• 📞 Phone: ${tenant.phoneNo}
+• 🏠 Address: ${tenant.address}
 • 🏢 Company: ${CompanyDetails.companyName}
 
 If you have any questions, feel free to reach out to us at ${CompanyDetails.email}.
@@ -204,7 +178,7 @@ const sendAgentRegistrationEmail = async (agent, CompanyDetails) => {
       agent.email,
       "Welcome to Your New Role - Agent Registration Details",
       agentDetails,
-      CompanyDetails._id
+      CompanyDetails.id
     );
   } catch (err) {
     console.error("Failed to send agent registration email:", err);
@@ -215,12 +189,28 @@ const sendAgentRegistrationEmail = async (agent, CompanyDetails) => {
 
 const generateAccessAndRefreshTokens = async (userId) => {
   try {
-    const agent = await Agent.findById(userId);
-    const accessToken = agent.generateAccessToken();
-    const refreshToken = agent.generateRefreshToken();
+    const agent = await getRepository("Agent").findOne({ where: { id: userId } });
+    const user = agent
+      ? await getRepository("User").findOne({ where: { id: agent.userId } })
+      : null;
+    const userRole = user
+      ? await getRepository("UserRole").findOne({
+          where: { userId: user.id, status: "active" },
+          relations: { role: true, company: true },
+        })
+      : null;
+    const payload = {
+      userId: user.id,
+      email: user.email,
+      role: userRole?.role?.name,
+      roleId: userRole?.role?.id,
+      companyId: userRole?.company?.id || null,
+    };
+    const accessToken = jwt.sign(payload, process.env.ACCESS_TOKEN_SECRET, { expiresIn: process.env.ACCESS_TOKEN_EXPIRY });
+    const refreshToken = jwt.sign(payload, process.env.REFRESH_TOKEN_SECRET, { expiresIn: process.env.REFRESH_TOKEN_EXPIRY });
 
-    agent.refreshToken = refreshToken;
-    await agent.save({ validateBeforeSave: false });
+    user.refreshToken = refreshToken;
+    await getRepository("User").save(user);
     return { accessToken, refreshToken };
   } catch (error) {
     throw new CustomError(
@@ -234,7 +224,7 @@ const generateAccessAndRefreshTokens = async (userId) => {
 export const loginAgent = async (req, res) => {
   const { email, password } = req.body;
 
-  const agent = await Agent.findOne({ email });
+  const agent = await getRepository("Agent").findOne({ where: { email } });
 
   if (!agent) {
     throw new CustomError(
@@ -244,7 +234,8 @@ export const loginAgent = async (req, res) => {
     );
   }
 
-  const passwordVerify = await agent.isPasswordCorrect(password);
+  const user = await getRepository("User").findOne({ where: { id: agent.userId } });
+  const passwordVerify = await comparePassword(password, user.password);
 
   if (!passwordVerify) {
     throw new CustomError(
@@ -255,12 +246,10 @@ export const loginAgent = async (req, res) => {
   }
 
   const { accessToken, refreshToken } = await generateAccessAndRefreshTokens(
-    agent._id
+    agent.id
   );
 
-  const loginAgent = await Agent.findById(agent._id).select(
-    "-password -refreshToken"
-  );
+  const loginAgent = await getRepository("Agent").findOne({ where: { id: agent.id } });
 
   res.setHeader("token", accessToken);
 
@@ -280,10 +269,9 @@ export const loginAgent = async (req, res) => {
 export const editAgent = async (req, res, next) => {
   const agentId = req.query.id;
   const updateData = req.body;
-  const editAgent = await Agent.findByIdAndUpdate(agentId, updateData, {
-    new: true,
-    runValidators: true,
-  });
+  const agentRepository = getRepository("Agent");
+  const existingAgent = await agentRepository.findOne({ where: { id: agentId } });
+  const editAgent = existingAgent ? await agentRepository.save(Object.assign(existingAgent, updateData)) : null;
   if (!editAgent) {
     return new CustomError(
       statusCodes?.serviceUnavailable,
@@ -303,10 +291,10 @@ export const getAllAgent = async (req) => {
       errorCodes.missing_id
     );
   }
-  const allAgent = await Agent.find({
-    companyId: companyId,
-    isDeleted: false,
-  }).sort({ createdAt: -1 });
+  const allAgent = await getRepository("Agent").find({
+    where: { companyId, isDeleted: "false" },
+    order: { createdAt: "DESC" },
+  });
 
   if (!allAgent) {
     throw new CustomError(
@@ -321,7 +309,7 @@ export const getAllAgent = async (req) => {
 export const deleteAgent = async (req, res) => {
   const agentId = req.query.id;
 
-  const agent = await Agent.findById(agentId);
+  const agent = await getRepository("Agent").findOne({ where: { id: agentId } });
   if (!agent) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -330,15 +318,15 @@ export const deleteAgent = async (req, res) => {
     );
   }
 
-  agent.isDeleted = true;
-  await agent.save();
+  agent.isDeleted = "true";
+  await getRepository("Agent").save(agent);
 
   return agent;
 };
 
 export const getAgentById = async (req, res) => {
   const agentId = req.query.id;
-  const agent = await Agent.findById(agentId);
+  const agent = await getRepository("Agent").findOne({ where: { id: agentId } });
 
   if (!agent) {
     throw new CustomError(
@@ -348,9 +336,10 @@ export const getAgentById = async (req, res) => {
     );
   }
 
-  const bookings = await Booking.find({ createdBy: agentId })
-    .populate("propertyId")
-    .populate("tenantId");
+  const bookings = await getRepository("Booking").find({
+    where: { createdBy: agentId },
+    relations: { property: true, tenant: true },
+  });
 
   //   const formattedBookings = bookings.map((bookingData) => ({
   //     propertyName: bookingData.propertyId?.propertyname,
@@ -359,11 +348,14 @@ export const getAgentById = async (req, res) => {
   //     address: bookingData.propertyId?.address
   // }));
 
-  const tenant = await Tenant.find({ reporterId: agentId });
+  const tenant = await getRepository("Tenant").find({ where: { reporterId: agentId } });
 
   return {
     agent,
-    bookings,
+    bookings: bookings.map((booking) => {
+      const { property, tenant, ...bookingData } = booking;
+      return { ...bookingData, propertyId: property, tenantId: tenant };
+    }),
     // booking: formattedBookings,
     tenant,
   };
@@ -375,13 +367,10 @@ export const changePassword = async (req) => {
   
 
 
-  const hashedPassword = await bcrypt.hash(newPassword, 10);
-
-  const result = await Agent.findByIdAndUpdate(id, {
-    $set: {
-      password: hashedPassword,
-    },
-  });
+  const hashedPassword = await hashPassword(newPassword);
+  const agent = await getRepository("Agent").findOne({ where: { id } });
+  const user = agent ? await getRepository("User").findOne({ where: { id: agent.userId } }) : null;
+  const result = user ? await getRepository("User").save(Object.assign(user, { password: hashedPassword })) : null;
   
   return result;
 };

@@ -1,7 +1,10 @@
-import AccountsPayable from "../models/accountsPayable.model.js"
+import AppDataSource from "../core/database/data-source.js";
+import { In, MoreThan } from "typeorm";
 import { errorCodes, Message, statusCodes } from "../core/common/constant.js";
 import CustomError from "../utils/exception.js";
-import UnifiedVoucher from "../models/UnifiedVoucher.model.js";
+
+const accountsPayableRepository = AppDataSource.getRepository("AccountsPayable");
+const unifiedVoucherRepository = AppDataSource.getRepository("UnifiedVoucher");
 
 
 export const getAccountsPayable = async (req, res) => {
@@ -15,17 +18,16 @@ export const getAccountsPayable = async (req, res) => {
     }
 
     try {
-        const accountsPayable = await UnifiedVoucher.find({
-            companyId,
-            isDeleted: false,
-            voucherType: { $in: ['SP', 'PUR'] },
-            status: { $in: ['pending'] },
-            paymentStatus: { $in: ['pending', 'partial-paid', 'overdue'] },
-            $or: [
-                { "amount.balance": { $gt: 0 } },
-                { "amount.pending": { $gt: 0 } }
-            ]
-        }).populate('debit.accountId credit.accountId sourceDocument.referenceId');
+        const accountsPayable = await unifiedVoucherRepository.find({
+            where: {
+                companyId,
+                isDeleted: false,
+                voucherType: In(['SP', 'PUR']),
+                status: 'pending',
+                paymentStatus: In(['pending', 'partial', 'overdue']),
+                outstandingAmount: MoreThan(0)
+            }
+        });
 
         if (!accountsPayable || accountsPayable.length === 0) {
             return res.status(200).json([]);
@@ -52,12 +54,12 @@ export const getAccountsPayableById = async (req, res) => {
         });
     }
 
-    const data = await AccountsPayable.findOne({
-        _id: id,
-        isDeleted: false
-    })
-        .populate('purchaseDetailId')
-        .populate('vendorId');
+    const data = await accountsPayableRepository.findOne({
+        where: {
+            id,
+            isDeleted: false
+        }
+    });
 
     if (!data) {
         throw new CustomError(
@@ -122,22 +124,29 @@ export const postVoucherForVendor = async (req, res) => {
         status: status || 'approved'
     };
 
-    const newVoucher = await UnifiedVoucher.create(voucherData);
+    if (typeof amount !== 'number' || !Number.isFinite(amount)) {
+        throw new CustomError(400, 'Invalid amount provided', 'invalid_amount');
+    }
+
+    const newVoucher = unifiedVoucherRepository.create(voucherData);
+    await unifiedVoucherRepository.save(newVoucher);
 
     // Update the existing voucher if _id was provided
     if (_id) {
-        const updatedPayable = await UnifiedVoucher.findOneAndUpdate(
-            {
-                _id: _id,
+        const updatedPayable = await unifiedVoucherRepository.findOne({
+            where: {
+                id: _id,
                 companyId,
                 isDeleted: false
-            },
-            {
-                status: 'paid',
-                paymentStatus: 'paid'
-            },
-            { new: true }
-        );
+            }
+        });
+
+        if (updatedPayable) {
+            await unifiedVoucherRepository.update(
+                { id: _id, companyId, isDeleted: false },
+                { status: 'paid', paymentStatus: 'paid' }
+            );
+        }
 
         if (!updatedPayable) {
             console.warn(`No pending UnifiedVoucher found for ID: ${_id}`);
@@ -190,13 +199,13 @@ export const postVoucherForPurchase = async (req, res) => {
         // If _id is provided, this is a payment against existing voucher
         if (_id) {
             // Update the purchase record status to paid
-            const update = await UnifiedVoucher.findOne(
-                {
-                    _id,
+            const update = await unifiedVoucherRepository.findOne({
+                where: {
+                    id: _id,
                     companyId,
                     isDeleted: false
                 }
-            );
+            });
 
             if (!update) {
                 console.log(update);
@@ -208,12 +217,12 @@ export const postVoucherForPurchase = async (req, res) => {
             }
 
             // Ensure amount values are valid numbers
-            const currentTotal = Number(update.amount?.total) || 0;
-            const currentPaid = Number(update.amount?.paid) || 0;
+            const currentTotal = Number(update.amount) || 0;
+            const currentOutstanding = Number(update.outstandingAmount ?? currentTotal) || 0;
             const paymentAmount = Number(amount) || 0;
 
-            const newPendingAmount = currentTotal - (currentPaid + paymentAmount);
-            const newPaidAmount = currentPaid + paymentAmount;
+            const newPendingAmount = currentOutstanding - paymentAmount;
+            const newPaidAmount = currentTotal - Math.max(0, newPendingAmount);
 
             let paymentStatus;
             let voucherStatus;
@@ -221,26 +230,26 @@ export const postVoucherForPurchase = async (req, res) => {
                 paymentStatus = 'paid';
                 voucherStatus = 'approved'
             } else if (newPaidAmount > 0 && newPendingAmount > 0) {
-                paymentStatus = 'partial-paid';
+                paymentStatus = 'partial';
                 voucherStatus = 'pending'
             } else {
                 paymentStatus = 'pending';
                 voucherStatus = 'pending'
             }
 
-            const updateData = {
-                'amount.balance': Math.max(0, newPendingAmount),
-                'amount.paid': newPaidAmount,
-                paymentStatus: paymentStatus,
-                status: voucherStatus
-            };
-            await UnifiedVoucher.updateOne(
-                { _id: update._id },
-                { $set: updateData }
+            await unifiedVoucherRepository.update(
+                { id: update.id, companyId, isDeleted: false },
+                {
+                    outstandingAmount: Math.max(0, newPendingAmount),
+                    lastPaymentAmount: paymentAmount,
+                    lastPaymentDate: date || new Date(),
+                    paymentStatus,
+                    status: voucherStatus
+                }
             );
 
             // Create payment voucher
-            const data = await UnifiedVoucher.create({
+            const data = unifiedVoucherRepository.create({
                 voucherNo: finalVoucherNo,
                 voucherType: voucherType || 'PUR', // Purchase voucher
                 companyId,
@@ -257,11 +266,9 @@ export const postVoucherForPurchase = async (req, res) => {
                     accountType: credit?.accountType || 'Vendor',
                     accountName: credit?.accountName || 'Vendor Account'
                 },
-                amount: {
-                    balance: 0,
-                    total: paymentAmount,
-                    paid: paymentAmount
-                },
+                amount: paymentAmount,
+                outstandingAmount: 0,
+                totalAmountOwed: paymentAmount,
                 sourceDocument: sourceDocument || {
                     referenceId: _id,
                     referenceModel: 'PurchaseDetails'
@@ -271,6 +278,7 @@ export const postVoucherForPurchase = async (req, res) => {
                 tags: tags || ['Payment', 'Purchase'],
                 details: Details || `Payment for purchase`
             });
+            await unifiedVoucherRepository.save(data);
 
             if (!data) {
                 throw new CustomError(
@@ -301,7 +309,17 @@ export const postVoucherForPurchase = async (req, res) => {
             // Add optional fields if they exist
             if (sourceDocument) voucherData.sourceDocument = sourceDocument;
 
-            const data = await UnifiedVoucher.create(voucherData);
+            if (typeof amount !== 'number' || !Number.isFinite(amount)) {
+                throw new CustomError(400, 'Invalid amount provided', 'invalid_amount');
+            }
+
+            voucherData.amount = amount;
+            voucherData.outstandingAmount = amount;
+            voucherData.totalAmountOwed = amount;
+            voucherData.paymentStatus = 'pending';
+
+            const data = unifiedVoucherRepository.create(voucherData);
+            await unifiedVoucherRepository.save(data);
 
             if (!data) {
                 throw new CustomError(
@@ -336,13 +354,13 @@ export const postVoucherForServiceProvider = async (req, res) => {
         // If _id is provided, this is a payment against existing voucher
         if (_id) {
             // Update the maintenance record status to paid
-            const update = await UnifiedVoucher.findOne(
-                {
-                    _id,
+            const update = await unifiedVoucherRepository.findOne({
+                where: {
+                    id: _id,
                     companyId,
                     isDeleted: false
                 }
-            );
+            });
 
             if (!update) {
                 console.log(update);
@@ -354,12 +372,12 @@ export const postVoucherForServiceProvider = async (req, res) => {
             }
 
             // Ensure amount values are valid numbers
-            const currentTotal = Number(update.amount?.total) || 0;
-            const currentPaid = Number(update.amount?.paid) || 0;
+            const currentTotal = Number(update.amount) || 0;
+            const currentOutstanding = Number(update.outstandingAmount ?? currentTotal) || 0;
             const paymentAmount = Number(amount) || 0;
 
-            const newPendingAmount = currentTotal - (currentPaid + paymentAmount);
-            const newPaidAmount = currentPaid + paymentAmount;
+            const newPendingAmount = currentOutstanding - paymentAmount;
+            const newPaidAmount = currentTotal - Math.max(0, newPendingAmount);
 
             let paymentStatus;
             let voucherStatus;
@@ -367,26 +385,26 @@ export const postVoucherForServiceProvider = async (req, res) => {
                 paymentStatus = 'paid';
                 voucherStatus = 'approved'
             } else if (newPaidAmount > 0 && newPendingAmount > 0) {
-                paymentStatus = 'partial-paid';
+                paymentStatus = 'partial';
                 voucherStatus = 'pending'
             } else {
                 paymentStatus = 'pending';
                 voucherStatus = 'pending'
             }
 
-            const updateData = {
-                'amount.balance': Math.max(0, newPendingAmount),
-                'amount.paid': newPaidAmount,
-                paymentStatus: paymentStatus,
-                status: voucherStatus
-            };
-            await UnifiedVoucher.updateOne(
-                { _id: update._id },
-                { $set: updateData }
+            await unifiedVoucherRepository.update(
+                { id: update.id, companyId, isDeleted: false },
+                {
+                    outstandingAmount: Math.max(0, newPendingAmount),
+                    lastPaymentAmount: paymentAmount,
+                    lastPaymentDate: date || new Date(),
+                    paymentStatus,
+                    status: voucherStatus
+                }
             );
 
             // Create payment voucher
-            const data = await UnifiedVoucher.create({
+            const data = unifiedVoucherRepository.create({
                 voucherNo: finalVoucherNo,
                 voucherType: 'SP', // Service Provider voucher
                 companyId,
@@ -403,11 +421,9 @@ export const postVoucherForServiceProvider = async (req, res) => {
                     accountType: 'ServiceProvider',
                     accountName: req.body.credit?.accountName || 'Service Provider Account'
                 },
-                amount: {
-                    balance: 0,
-                    total: paymentAmount,
-                    paid: paymentAmount
-                },
+                amount: paymentAmount,
+                outstandingAmount: 0,
+                totalAmountOwed: paymentAmount,
                 sourceDocument: {
                     referenceId: _id,
                     referenceModel: 'ServiceProvider'
@@ -417,6 +433,7 @@ export const postVoucherForServiceProvider = async (req, res) => {
                 tags: ['Payment', 'ServiceProvider'],
                 details: Details || `Payment for service provider`
             });
+            await unifiedVoucherRepository.save(data);
 
             if (!data) {
                 throw new CustomError(
@@ -452,12 +469,6 @@ export const postVoucherForServiceProvider = async (req, res) => {
                 );
             }
             
-            const amountObj = amount || {
-                balance: paymentAmount,
-                total: paymentAmount,
-                paid: 0
-            };
-
             const voucherData = {
                 voucherNo: finalVoucherNo,
                 voucherType: voucherType || 'SP',
@@ -467,7 +478,10 @@ export const postVoucherForServiceProvider = async (req, res) => {
                 particulars: particulars || Details || 'Service Provider voucher created',
                 debit: debitObj,
                 credit: creditObj,
-                amount: amountObj,
+                amount: paymentAmount,
+                outstandingAmount: paymentAmount,
+                totalAmountOwed: paymentAmount,
+                paymentStatus: 'pending',
                 status: status || 'draft',
                 tags: ['Voucher', voucherType || 'SP'],
                 details: Details || 'Service Provider voucher created'
@@ -476,7 +490,8 @@ export const postVoucherForServiceProvider = async (req, res) => {
             // Add optional fields if they exist
             if (req.body.sourceDocument) voucherData.sourceDocument = req.body.sourceDocument;
 
-            const data = await UnifiedVoucher.create(voucherData);
+            const data = unifiedVoucherRepository.create(voucherData);
+            await unifiedVoucherRepository.save(data);
 
             if (!data) {
                 throw new CustomError(
