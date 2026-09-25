@@ -1,5 +1,5 @@
 import AppDataSource from "../core/database/data-source.js";
-import { In } from "typeorm";
+import { In, MoreThan } from "typeorm";
 
 const unifiedVoucherRepository = AppDataSource.getRepository("UnifiedVoucher");
 
@@ -11,26 +11,6 @@ class UnifiedVoucherService {
   /**
    * Create a new voucher
    */
-  normalizeAmountValue(amountValue) {
-    if (typeof amountValue === "number") {
-      return Number(amountValue || 0);
-    }
-
-    if (typeof amountValue === "string") {
-      const parsed = Number(amountValue);
-      return Number.isFinite(parsed) ? parsed : 0;
-    }
-
-    if (typeof amountValue === "object" && amountValue !== null) {
-      const candidate = Number(
-        amountValue.total ?? amountValue.balance ?? amountValue.paid ?? 0
-      );
-      return Number.isFinite(candidate) ? candidate : 0;
-    }
-
-    return 0;
-  }
-
   calculateMaintenanceSurcharge(voucherData) {
     if (voucherData.voucherType !== "MDN" || !voucherData.dueDate) {
       return 0;
@@ -51,15 +31,23 @@ class UnifiedVoucherService {
   }
 
   applyLegacyPreSaveDefaults(voucherData) {
-    const amountValue = this.normalizeAmountValue(voucherData.amount);
+    if (typeof voucherData.amount !== "number" || !Number.isFinite(voucherData.amount)) {
+      throw new Error("Amount must be a finite number");
+    }
+
+    const amountValue = voucherData.amount;
     const surchargeAmount = this.calculateMaintenanceSurcharge(voucherData);
     const totalAmountOwed = Number(amountValue) + Number(surchargeAmount || 0);
-    const explicitOutstanding = this.normalizeAmountValue(
-      voucherData.outstandingAmount
-    );
+    const explicitOutstanding = voucherData.outstandingAmount;
+    if (
+      explicitOutstanding !== undefined &&
+      explicitOutstanding !== null &&
+      (typeof explicitOutstanding !== "number" || !Number.isFinite(explicitOutstanding))
+    ) {
+      throw new Error("Outstanding amount must be a finite number");
+    }
     const initialOutstandingAmount =
       voucherData.outstandingAmount == null ||
-      explicitOutstanding === 0 ||
       Number(explicitOutstanding) === Number(amountValue)
         ? totalAmountOwed
         : explicitOutstanding;
@@ -198,6 +186,11 @@ class UnifiedVoucherService {
         throw new Error("Can only record payments against AR or AP vouchers");
       }
 
+      const paymentAmountValue = Number(paymentAmount);
+      if (!Number.isFinite(paymentAmountValue) || paymentAmountValue <= 0) {
+        throw new Error("Payment amount must be a positive number");
+      }
+
       const paymentVoucherData = {
         voucherType: originalVoucher.voucherType === "AR" ? "REC" : "PAY",
         companyId: originalVoucher.companyId,
@@ -228,7 +221,7 @@ class UnifiedVoucherService {
                 accountType: "Company",
                 accountName: "Company",
               },
-        amount: paymentAmount,
+        amount: paymentAmountValue,
         sourceDocument: {
           referenceId: originalVoucher.id,
           referenceModel: "UnifiedVoucher",
@@ -243,8 +236,18 @@ class UnifiedVoucherService {
       }
 
       const paymentVoucher = paymentResult.data;
-      const currentOutstanding = Number(originalVoucher.outstandingAmount || 0);
-      const newOutstandingAmount = Math.max(0, currentOutstanding - Number(paymentAmount));
+      const paymentDateValue = paymentDate || new Date();
+      const paymentHistory = Array.isArray(originalVoucher.paymentHistory)
+        ? originalVoucher.paymentHistory
+        : [];
+      const totalAmountOwed = Number(
+        originalVoucher.totalAmountOwed ?? originalVoucher.amount ?? 0
+      );
+      const totalPaid = paymentHistory.reduce(
+        (sum, payment) => sum + Number(payment.amount || 0),
+        paymentAmountValue
+      );
+      const newOutstandingAmount = Math.max(0, totalAmountOwed - totalPaid);
       const linkedVouchers = Array.isArray(originalVoucher.linkedVouchers)
         ? originalVoucher.linkedVouchers
         : [];
@@ -252,12 +255,23 @@ class UnifiedVoucherService {
       const updateData = {
         outstandingAmount: newOutstandingAmount,
         paymentStatus: newOutstandingAmount === 0 ? "paid" : "partial",
+        lastPaymentAmount: paymentAmountValue,
+        lastPaymentDate: paymentDateValue,
+        paymentHistory: [
+          ...paymentHistory,
+          {
+            amount: paymentAmountValue,
+            date: paymentDateValue,
+            voucherId: paymentVoucher.id,
+            particulars: `Payment of ${paymentAmountValue}`,
+          },
+        ],
         linkedVouchers: [
           ...linkedVouchers,
           {
             voucherId: paymentVoucher.id,
-            amount: paymentAmount,
-            date: paymentDate || new Date(),
+            amount: paymentAmountValue,
+            date: paymentDateValue,
           },
         ],
       };
@@ -291,11 +305,12 @@ class UnifiedVoucherService {
     try {
       const vouchers = await unifiedVoucherRepository.find({
         where: {
+          ...filters,
           companyId,
           voucherType: "AR",
           paymentStatus: In(["pending", "partial", "overdue"]),
           isDeleted: false,
-          ...filters,
+          outstandingAmount: MoreThan(0),
         },
         order: { dueDate: "ASC" },
       });
@@ -329,11 +344,12 @@ class UnifiedVoucherService {
     try {
       const vouchers = await unifiedVoucherRepository.find({
         where: {
+          ...filters,
           companyId,
           voucherType: "AP",
           paymentStatus: In(["pending", "partial", "overdue"]),
           isDeleted: false,
-          ...filters,
+          outstandingAmount: MoreThan(0),
         },
         order: { dueDate: "ASC" },
       });
@@ -365,16 +381,36 @@ class UnifiedVoucherService {
    */
   async getMaintenanceServices(companyId, filters = {}) {
     try {
-      const vouchers = await unifiedVoucherRepository.find({
-        where: {
-          companyId,
-          voucherType: "MDN",
-          tags: In(["Maintenance"]),
-          isDeleted: false,
-          ...filters,
-        },
-        order: { date: "DESC" },
-      });
+      const queryBuilder = unifiedVoucherRepository
+        .createQueryBuilder("voucher")
+        .where("voucher.companyId = :companyId", { companyId })
+        .andWhere("voucher.voucherType = :voucherType", { voucherType: "MDN" })
+        .andWhere("voucher.isDeleted = :isDeleted", { isDeleted: false })
+        .andWhere(":maintenanceTag = ANY(voucher.tags)", {
+          maintenanceTag: "Maintenance",
+        })
+        .orderBy("voucher.date", "DESC");
+
+      if (filters.month !== undefined && filters.month !== null) {
+        queryBuilder.andWhere("voucher.month = :month", { month: filters.month });
+      }
+      if (filters.propertyId !== undefined && filters.propertyId !== null) {
+        queryBuilder.andWhere("voucher.propertyId = :propertyId", {
+          propertyId: filters.propertyId,
+        });
+      }
+      if (filters.date?.$gte !== undefined) {
+        queryBuilder.andWhere("voucher.date >= :dateFrom", {
+          dateFrom: filters.date.$gte,
+        });
+      }
+      if (filters.date?.$lte !== undefined) {
+        queryBuilder.andWhere("voucher.date <= :dateTo", {
+          dateTo: filters.date.$lte,
+        });
+      }
+
+      const vouchers = await queryBuilder.getMany();
 
       const totalRevenue = vouchers.reduce((sum, v) => sum + Number(v.amount || 0), 0);
 
@@ -469,11 +505,11 @@ class UnifiedVoucherService {
         `
           SELECT
             CASE
-              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 0 THEN 'Not Due'
-              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 30 THEN '0-30 days'
-              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 60 THEN '31-60 days'
-              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 90 THEN '61-90 days'
-              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 120 THEN '91-120 days'
+              WHEN FLOOR(EXTRACT(EPOCH FROM (NOW() - due_date)) / 86400) < 0 THEN 'Not Due'
+              WHEN FLOOR(EXTRACT(EPOCH FROM (NOW() - due_date)) / 86400) < 30 THEN '0-30 days'
+              WHEN FLOOR(EXTRACT(EPOCH FROM (NOW() - due_date)) / 86400) < 60 THEN '31-60 days'
+              WHEN FLOOR(EXTRACT(EPOCH FROM (NOW() - due_date)) / 86400) < 90 THEN '61-90 days'
+              WHEN FLOOR(EXTRACT(EPOCH FROM (NOW() - due_date)) / 86400) < 120 THEN '91-120 days'
               ELSE 'Over 120 days'
             END AS "ageRange",
             COUNT(*)::int AS count,
@@ -485,20 +521,20 @@ class UnifiedVoucherService {
             AND is_deleted = false
           GROUP BY
             CASE
-              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 0 THEN 'Not Due'
-              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 30 THEN '0-30 days'
-              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 60 THEN '31-60 days'
-              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 90 THEN '61-90 days'
-              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 120 THEN '91-120 days'
+              WHEN FLOOR(EXTRACT(EPOCH FROM (NOW() - due_date)) / 86400) < 0 THEN 'Not Due'
+              WHEN FLOOR(EXTRACT(EPOCH FROM (NOW() - due_date)) / 86400) < 30 THEN '0-30 days'
+              WHEN FLOOR(EXTRACT(EPOCH FROM (NOW() - due_date)) / 86400) < 60 THEN '31-60 days'
+              WHEN FLOOR(EXTRACT(EPOCH FROM (NOW() - due_date)) / 86400) < 90 THEN '61-90 days'
+              WHEN FLOOR(EXTRACT(EPOCH FROM (NOW() - due_date)) / 86400) < 120 THEN '91-120 days'
               ELSE 'Over 120 days'
             END
           ORDER BY
             CASE
-              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 0 THEN 1
-              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 30 THEN 2
-              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 60 THEN 3
-              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 90 THEN 4
-              WHEN EXTRACT(DAY FROM (NOW() - due_date)) < 120 THEN 5
+              WHEN FLOOR(EXTRACT(EPOCH FROM (NOW() - due_date)) / 86400) < 0 THEN 1
+              WHEN FLOOR(EXTRACT(EPOCH FROM (NOW() - due_date)) / 86400) < 30 THEN 2
+              WHEN FLOOR(EXTRACT(EPOCH FROM (NOW() - due_date)) / 86400) < 60 THEN 3
+              WHEN FLOOR(EXTRACT(EPOCH FROM (NOW() - due_date)) / 86400) < 90 THEN 4
+              WHEN FLOOR(EXTRACT(EPOCH FROM (NOW() - due_date)) / 86400) < 120 THEN 5
               ELSE 6
             END;
         `,
