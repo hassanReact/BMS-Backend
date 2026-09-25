@@ -8,11 +8,17 @@ export const create = async (req, res) => {
     const complaintId = req.query.complaintId;
 
     const comment = commentRepository.create({
-        complaintId,
-        senderId,
-        senderRole,
-        message
-    });
+    complaintId,
+    senderId,
+    senderRole,
+    message,
+    readBy: [
+        {
+            userId: senderId,
+            role: senderRole
+        }
+    ]
+});
     await commentRepository.save(comment);
 
     if (!comment) {
