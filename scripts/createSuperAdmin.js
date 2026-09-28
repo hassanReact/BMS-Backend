@@ -1,4 +1,5 @@
 import { config } from 'dotenv';
+import { IsNull } from 'typeorm';
 import AppDataSource from '../src/core/database/data-source.js';
 import { hashPassword } from '../src/services/user.services.js';
 
@@ -73,7 +74,7 @@ const createSuperAdminFromEnv = async () => {
     const existingSuperAdminRole = await userRoleRepository.findOne({
       where: {
         roleId: superAdminRole.id,
-        companyId: null,
+        companyId: IsNull(),
         status: "active",
       },
       relations: { user: true },
