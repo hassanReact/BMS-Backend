@@ -187,84 +187,84 @@ const sendAgentRegistrationEmail = async (agent, CompanyDetails) => {
 
 
 
-const generateAccessAndRefreshTokens = async (userId) => {
-  try {
-    const agent = await getRepository("Agent").findOne({ where: { id: userId } });
-    const user = agent
-      ? await getRepository("User").findOne({ where: { id: agent.userId } })
-      : null;
-    const userRole = user
-      ? await getRepository("UserRole").findOne({
-          where: { userId: user.id, status: "active" },
-          relations: { role: true, company: true },
-        })
-      : null;
-    const payload = {
-      userId: user.id,
-      email: user.email,
-      role: userRole?.role?.name,
-      roleId: userRole?.role?.id,
-      companyId: userRole?.company?.id || null,
-    };
-    const accessToken = jwt.sign(payload, process.env.ACCESS_TOKEN_SECRET, { expiresIn: process.env.ACCESS_TOKEN_EXPIRY });
-    const refreshToken = jwt.sign(payload, process.env.REFRESH_TOKEN_SECRET, { expiresIn: process.env.REFRESH_TOKEN_EXPIRY });
+// const generateAccessAndRefreshTokens = async (userId) => {
+//   try {
+//     const agent = await getRepository("Agent").findOne({ where: { id: userId } });
+//     const user = agent
+//       ? await getRepository("User").findOne({ where: { id: agent.userId } })
+//       : null;
+//     const userRole = user
+//       ? await getRepository("UserRole").findOne({
+//           where: { userId: user.id, status: "active" },
+//           relations: { role: true, company: true },
+//         })
+//       : null;
+//     const payload = {
+//       userId: user.id,
+//       email: user.email,
+//       role: userRole?.role?.name,
+//       roleId: userRole?.role?.id,
+//       companyId: userRole?.company?.id || null,
+//     };
+//     const accessToken = jwt.sign(payload, process.env.ACCESS_TOKEN_SECRET, { expiresIn: process.env.ACCESS_TOKEN_EXPIRY });
+//     const refreshToken = jwt.sign(payload, process.env.REFRESH_TOKEN_SECRET, { expiresIn: process.env.REFRESH_TOKEN_EXPIRY });
 
-    user.refreshToken = refreshToken;
-    await getRepository("User").save(user);
-    return { accessToken, refreshToken };
-  } catch (error) {
-    throw new CustomError(
-      statusCodes?.internalServerError,
-      "Something went wrong while generating refresh and access tokens.",
-      errorCodes?.server_error
-    );
-  }
-};
+//     user.refreshToken = refreshToken;
+//     await getRepository("User").save(user);
+//     return { accessToken, refreshToken };
+//   } catch (error) {
+//     throw new CustomError(
+//       statusCodes?.internalServerError,
+//       "Something went wrong while generating refresh and access tokens.",
+//       errorCodes?.server_error
+//     );
+//   }
+// };
 
-export const loginAgent = async (req, res) => {
-  const { email, password } = req.body;
+// export const loginAgent = async (req, res) => {
+//   const { email, password } = req.body;
 
-  const agent = await getRepository("Agent").findOne({ where: { email } });
+//   const agent = await getRepository("Agent").findOne({ where: { email } });
 
-  if (!agent) {
-    throw new CustomError(
-      statusCodes?.notFound,
-      Message?.notFound,
-      errorCodes?.not_found
-    );
-  }
+//   if (!agent) {
+//     throw new CustomError(
+//       statusCodes?.notFound,
+//       Message?.notFound,
+//       errorCodes?.not_found
+//     );
+//   }
 
-  const user = await getRepository("User").findOne({ where: { id: agent.userId } });
-  const passwordVerify = await comparePassword(password, user.password);
+//   const user = await getRepository("User").findOne({ where: { id: agent.userId } });
+//   const passwordVerify = await comparePassword(password, user.password);
 
-  if (!passwordVerify) {
-    throw new CustomError(
-      statusCodes?.badRequest,
-      Message?.inValid,
-      errorCodes?.invalid_credentials
-    );
-  }
+//   if (!passwordVerify) {
+//     throw new CustomError(
+//       statusCodes?.badRequest,
+//       Message?.inValid,
+//       errorCodes?.invalid_credentials
+//     );
+//   }
 
-  const { accessToken, refreshToken } = await generateAccessAndRefreshTokens(
-    agent.id
-  );
+//   const { accessToken, refreshToken } = await generateAccessAndRefreshTokens(
+//     agent.id
+//   );
 
-  const loginAgent = await getRepository("Agent").findOne({ where: { id: agent.id } });
+//   const loginAgent = await getRepository("Agent").findOne({ where: { id: agent.id } });
 
-  res.setHeader("token", accessToken);
+//   res.setHeader("token", accessToken);
 
-  const options = {
-    httpOnly: true,
-    secure: true,
-  };
+//   const options = {
+//     httpOnly: true,
+//     secure: true,
+//   };
 
-  return {
-    accessToken,
-    refreshToken,
-    options,
-    loginAgent,
-  };
-};
+//   return {
+//     accessToken,
+//     refreshToken,
+//     options,
+//     loginAgent,
+//   };
+// };
 
 export const editAgent = async (req, res, next) => {
   const agentId = req.query.id;
