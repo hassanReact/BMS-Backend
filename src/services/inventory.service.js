@@ -238,7 +238,7 @@ export const registerPurchaseDetails = async (req, res) => {
 };
 
 export const getPurchaseDetailsByIdService = async (purchasedId) => {
-  console.log("🔍 Route hit: /getPurchaseDetailById", purchasedId);
+  console.log("Route hit: /getPurchaseDetailById", purchasedId);
   // const purchasedId = req.query.id
   const purchaseDetail = await Inventory.PurchaseDetails.findOne({ _id: new mongoose.Types.ObjectId(purchasedId), isDeleted: false });
   if (!purchaseDetail) {
