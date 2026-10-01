@@ -1,20 +1,12 @@
 // import Owner from "../models/owner.model.js";
-import Company from "../models/company.model.js";
 import { errorCodes, Message, statusCodes } from "../core/common/constant.js";
 import CustomError from "../utils/exception.js";
-import Agent from "../models/staff.model.js";
-import Tenant from "../models/tenant.model.js";
-import Complaint from "../models/complaints.model.js";
-import Property from "../models/property.model.js";
-import Subscription from "../models/subscription.model.js";
 import { commentAndResolved } from "../controllers/company.controller.js";
-import bcrypt from "bcrypt";
-import Owner from "../models/owner.model.js";
-import mongoose from "mongoose";
-import User from "../models/user.model.js";
-import Role from "../models/role.model.js";
-import UserRole from "../models/userRole.model.js";
+import AppDataSource from "../core/database/data-source.js";
+import { hashPassword, comparePassword } from "./user.services.js";
 import jwt from "jsonwebtoken";
+
+const getRepository = (entityName) => AppDataSource.getRepository(entityName);
 
 
 export const companyRegistration = async (req) => {
@@ -30,17 +22,18 @@ export const companyRegistration = async (req) => {
 
   const normalizedEmail = email.toLowerCase().trim();
 
-  const session = await mongoose.startSession();
+  let createdCompany;
 
-  try {
-    let createdCompany;
-
-    await session.withTransaction(async () => {
+  await AppDataSource.transaction(async (transactionalEntityManager) => {
+    const roleRepository = transactionalEntityManager.getRepository("Role");
+    const userRepository = transactionalEntityManager.getRepository("User");
+    const companyRepository = transactionalEntityManager.getRepository("Company");
+    const userRoleRepository = transactionalEntityManager.getRepository("UserRole");
 
       // 1. Find CompanyAdmin role
-      const companyAdminRole = await Role.findOne({
-        name: "CompanyAdmin",
-      }).session(session);
+      const companyAdminRole = await roleRepository.findOne({
+        where: { name: "CompanyAdmin" },
+      });
 
       if (!companyAdminRole) {
         throw new CustomError(
@@ -51,10 +44,9 @@ export const companyRegistration = async (req) => {
       }
 
       // 2. Check if email already exists
-      const existingUser = await User.findOne({
-        email: normalizedEmail,
-        isDeleted: false,
-      }).session(session);
+      const existingUser = await userRepository.findOne({
+        where: { email: normalizedEmail, isDeleted: false },
+      });
 
       if (existingUser) {
         throw new CustomError(
@@ -65,69 +57,56 @@ export const companyRegistration = async (req) => {
       }
 
       // 3. Create User first
-      const users = await User.create(
-        [
-          {
-            fullname: companyName,
-            email: normalizedEmail,
-            password,
-            phoneNo,
-            role: "CompanyAdmin", // temporary legacy field
-          },
-        ],
-        { session }
-      );
-
-      const user = users[0];
+      const user = userRepository.create({
+        fullname: companyName,
+        email: normalizedEmail,
+        password: await hashPassword(password),
+        phoneNo,
+      });
+      await userRepository.save(user);
 
       // 4. Create Company with userId
-      const companies = await Company.create(
-        [
-          {
-            userId: user._id,
-            companyName,
-            email: normalizedEmail,
-            password,
-            phoneNo,
-            address,
-            currencyCode,
-            gstnumber,
-          },
-        ],
-        { session }
-      );
-
-      createdCompany = companies[0];
+      createdCompany = companyRepository.create({
+        userId: user.id,
+        companyName,
+        email: normalizedEmail,
+        password: await hashPassword(password),
+        phoneNo,
+        address,
+        currencyCode,
+        gstnumber,
+      });
+      await companyRepository.save(createdCompany);
 
       // 5. Create UserRole
-      await UserRole.create(
-        [
-          {
-            userId: user._id,
-            roleId: companyAdminRole._id,
-            companyId: createdCompany._id,
-          },
-        ],
-        { session }
-      );
-    });
+      const userRole = userRoleRepository.create({
+        userId: user.id,
+        roleId: companyAdminRole.id,
+        companyId: createdCompany.id,
+      });
+      await userRoleRepository.save(userRole);
+  });
 
-    const result = await Company.findById(createdCompany._id)
-      .select("-password -refreshToken");
+  const resultRecord = await getRepository("Company").findOne({
+    where: { id: createdCompany.id },
+  });
+  const result = resultRecord
+    ? Object.fromEntries(
+        Object.entries(resultRecord).filter(
+          ([field]) => field !== "password" && field !== "refreshToken"
+        )
+      )
+    : null;
 
-    if (!result) {
-      throw new CustomError(
-        statusCodes?.serviceUnavailable,
-        Message?.serverError,
-        errorCodes?.service_unavailable
-      );
-    }
-
-    return result;
-
-  } finally {
-    await session.endSession();
+  if (!result) {
+    throw new CustomError(
+      statusCodes?.serviceUnavailable,
+      Message?.serverError,
+      errorCodes?.service_unavailable
+    );
   }
+
+  return result;
 };
 
 export const addSMTPMailPassword = async (req) => {
@@ -141,11 +120,11 @@ export const addSMTPMailPassword = async (req) => {
     );
   }
 
-  const companyMailSMTP = await Company.findByIdAndUpdate(
-    id,
-    { smtpMail, smtpCode },
-    { new: true, runValidators: true }
-  );
+  const companyRepository = getRepository("Company");
+  const company = await companyRepository.findOne({ where: { id } });
+  const companyMailSMTP = company
+    ? await companyRepository.save(Object.assign(company, { smtpMail, smtpCode }))
+    : null;
 
   if (!companyMailSMTP) {
     throw new CustomError(
@@ -159,7 +138,9 @@ export const addSMTPMailPassword = async (req) => {
 };
 
 export const findSmtpDetails = async (CompanyId) => {
-  const companyDetails = await Company.findOne({ _id: CompanyId });
+  const companyDetails = await getRepository("Company").findOne({
+    where: { id: CompanyId },
+  });
   if (!companyDetails) {
     return false;
   }
@@ -175,13 +156,13 @@ export const findSmtpDetails = async (CompanyId) => {
 export const changePassword = async (req) => {
   const { id, newPassword } = req.body;
 
-  const hashedPassword = await bcrypt.hash(newPassword, 10);
+  const hashedPassword = await hashPassword(newPassword);
 
-  const result = await Company.findByIdAndUpdate(id, {
-    $set: {
-      password: hashedPassword,
-    },
-  });
+  const companyRepository = getRepository("Company");
+  const company = await companyRepository.findOne({ where: { id } });
+  const result = company
+    ? await companyRepository.save(Object.assign(company, { password: hashedPassword }))
+    : null;
   return result;
 };
 
@@ -368,9 +349,10 @@ export const universalLogin = async (req) => {
   const normalizedEmail = email.toLowerCase().trim();
 
   // 1. Find authentication account
-  const user = await User.findOne({
-    email: normalizedEmail,
-    isDeleted: false,
+  const userRepository = getRepository("User");
+  const userRoleRepository = getRepository("UserRole");
+  const user = await userRepository.findOne({
+    where: { email: normalizedEmail, isDeleted: false },
   });
 
   if (!user) {
@@ -382,7 +364,7 @@ export const universalLogin = async (req) => {
   }
 
   // 2. Check password
-  const passwordCorrect = await user.isPasswordCorrect(password);
+  const passwordCorrect = await comparePassword(password, user.password);
 
   if (!passwordCorrect) {
     throw new CustomError(
@@ -393,12 +375,10 @@ export const universalLogin = async (req) => {
   }
 
   // 3. Find all active roles of this user
-  const userRoles = await UserRole.findOne({
-    userId: user._id,
-    Status: "active",
-  })
-    .populate("roleId")
-    .populate("companyId");
+  const userRoles = await userRoleRepository.findOne({
+    where: { userId: user.id, status: "active" },
+    relations: { role: true, company: true },
+  });
 
     if (!userRoles){
     throw new CustomError(
@@ -410,11 +390,11 @@ export const universalLogin = async (req) => {
 
   // 5. Generate tokens
   const payload = {
-   userId: user._id,
+  userId: user.id,
     email: user.email,
-    role: userRoles.roleId.name,
-    roleId: userRoles.roleId._id,
-    companyId: userRoles.companyId?._id || null,
+   role: userRoles.role.name,
+   roleId: userRoles.role.id,
+   companyId: userRoles.company?.id || null,
   };
 
   const accessToken = jwt.sign(
@@ -435,10 +415,7 @@ export const universalLogin = async (req) => {
 
   // 6. Save refresh token
   user.refreshToken = refreshToken;
-
-  await user.save({
-    validateBeforeSave: false,
-  });
+  await userRepository.save(user);
 
   const options = {
     httpOnly: true,
@@ -450,14 +427,14 @@ export const universalLogin = async (req) => {
     requiresRoleSelection: false,
 
     user: {
-      _id: user._id,
+      _id: user.id,
       fullname: user.fullname,
       email: user.email,
     },
 
-    role: userRoles.roleId.name,
-    roleId: userRoles.roleId._id,
-    companyId: userRoles.companyId?._id || null,
+    role: userRoles.role.name,
+    roleId: userRoles.role.id,
+    companyId: userRoles.company?.id || null,
 
     accessToken,
     refreshToken,
@@ -472,11 +449,11 @@ const generateAccessAndRefreshTokens = async (
 ) => {
 
   const payload = {
-    userId: user._id,
+    userId: user.id,
     email: user.email,
-    roleId: userRole.roleId._id,
-    role: userRole.roleId.name,
-    companyId: userRole.companyId._id,
+    roleId: userRole.role.id,
+    role: userRole.role.name,
+    companyId: userRole.company?.id || null,
   };
 
   const accessToken = jwt.sign(
@@ -496,10 +473,7 @@ const generateAccessAndRefreshTokens = async (
   );
 
   user.refreshToken = refreshToken;
-
-  await user.save({
-    validateBeforeSave: false,
-  });
+  await getRepository("User").save(user);
 
   return {
     accessToken,
@@ -507,8 +481,9 @@ const generateAccessAndRefreshTokens = async (
   };
 };
 export const getAllCompany = async (req) => {
-  const AllComp = await Company.find({ isDeleted: false }).sort({
-    createdAt: -1,
+  const AllComp = await getRepository("Company").find({
+    where: { isDeleted: false },
+    order: { createdAt: "DESC" },
   });
 
   if (!AllComp) {
@@ -523,8 +498,9 @@ export const getAllCompany = async (req) => {
 };
 
 export const totalActiveCompany = async (req) => {
-  const AllComp = await Company.find({ isDeleted: false, status: true }).sort({
-    createdAt: -1,
+  const AllComp = await getRepository("Company").find({
+    where: { isDeleted: false, status: true },
+    order: { createdAt: "DESC" },
   });
 
   if (!AllComp) {
@@ -539,9 +515,14 @@ export const totalActiveCompany = async (req) => {
 };
 
 export const companySubscriptionDetails = async (req) => {
-  const AllComp = await Company.find({ isDeleted: false }).populate(
-    "subcriptionId"
-  );
+  const companies = await getRepository("Company").find({
+    where: { isDeleted: false },
+    relations: { subscription: true },
+  });
+  const AllComp = companies.map(({ subscription, ...company }) => ({
+    ...company,
+    subcriptionId: subscription || company.subcriptionId,
+  }));
 
   if (!AllComp) {
     throw new CustomError(
@@ -556,7 +537,9 @@ export const companySubscriptionDetails = async (req) => {
 
 export const getCompanyById = async (req) => {
   const companyId = req.query.id;
-  const companyDetails = await Company.findById(companyId);
+  const companyDetails = await getRepository("Company").findOne({
+    where: { id: companyId },
+  });
 
   if (!companyDetails) {
     throw new CustomError(
@@ -572,10 +555,11 @@ export const getCompanyById = async (req) => {
 export const editCompany = async (req, res, next) => {
   const CompanyId = req.query.id;
   const updateData = req.body;
-  const editCompany = await Company.findByIdAndUpdate(CompanyId, updateData, {
-    new: true,
-    runValidators: true,
-  });
+  const companyRepository = getRepository("Company");
+  const company = await companyRepository.findOne({ where: { id: CompanyId } });
+  const editCompany = company
+    ? await companyRepository.save(Object.assign(company, updateData))
+    : null;
   if (!updateData) {
     return new CustomError(
       statusCodes?.serviceUnavailable,
@@ -589,7 +573,8 @@ export const editCompany = async (req, res, next) => {
 export const deleteCompany = async (req, res) => {
   const companyId = req.query.id;
 
-  const company = await Company.findById(companyId);
+  const companyRepository = getRepository("Company");
+  const company = await companyRepository.findOne({ where: { id: companyId } });
   if (!company) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -599,7 +584,7 @@ export const deleteCompany = async (req, res) => {
   }
 
   company.isDeleted = true;
-  await company.save();
+  await companyRepository.save(company);
 
   return company;
 };
@@ -607,7 +592,10 @@ export const deleteCompany = async (req, res) => {
 export const changestatus = async (req, res) => {
   const companyId = req.query.id;
 
-  const company = await Company.findById(companyId);
+  const companyRepository = getRepository("Company");
+  const staffRepository = getRepository("Staff");
+  const tenantRepository = getRepository("Tenant");
+  const company = await companyRepository.findOne({ where: { id: companyId } });
 
   if (!company) {
     throw new CustomError(
@@ -619,14 +607,11 @@ export const changestatus = async (req, res) => {
 
   const newCompanyStatus = !company.status;
   company.status = newCompanyStatus;
-  await company.save();
+  await companyRepository.save(company);
 
-  await Agent.updateMany({ companyId }, { $set: { status: newCompanyStatus } });
+  await staffRepository.update({ companyId }, { status: newCompanyStatus });
 
-  await Tenant.updateMany(
-    { companyId },
-    { $set: { status: newCompanyStatus } }
-  );
+  await tenantRepository.update({ companyId }, { status: newCompanyStatus });
 
   return company;
 };
@@ -634,7 +619,8 @@ export const changestatus = async (req, res) => {
 export const updateMailStatus = async (req, res) => {
   const companyId = req.body.id || req.body.companyId;
 
-  const company = await Company.findById(companyId);
+  const companyRepository = getRepository("Company");
+  const company = await companyRepository.findOne({ where: { id: companyId } });
 
   if (!company) {
     throw new CustomError(
@@ -646,7 +632,7 @@ export const updateMailStatus = async (req, res) => {
 
   const newStatus = !company.isMailStatus;
   company.isMailStatus = newStatus;
-  await company.save();
+  await companyRepository.save(company);
 
   return company;
 };
@@ -654,7 +640,8 @@ export const updateMailStatus = async (req, res) => {
 export const updateWhataapStatus = async (req, res) => {
   const companyId = req.body.id || req.body.companyId;
 
-  const company = await Company.findById(companyId);
+  const companyRepository = getRepository("Company");
+  const company = await companyRepository.findOne({ where: { id: companyId } });
 
   if (!company) {
     throw new CustomError(
@@ -666,14 +653,15 @@ export const updateWhataapStatus = async (req, res) => {
 
   const newStatus = !company.whatappStatus;
   company.whatappStatus = newStatus;
-  await company.save();
+  await companyRepository.save(company);
 
   return company;
 };
 
 export const addSubcriptionPlan = async (req, res) => {
   const { companyId, SubscriptionId, buyDate } = req.body;
-  const company = await Company.findById(companyId);
+  const companyRepository = getRepository("Company");
+  const company = await companyRepository.findOne({ where: { id: companyId } });
 
   if (!company) {
     throw new CustomError(
@@ -684,18 +672,28 @@ export const addSubcriptionPlan = async (req, res) => {
   }
   company.subcriptionId = SubscriptionId;
   company.subcriptionBuyDate = buyDate;
-  await company.save();
+  await companyRepository.save(company);
 
   return company;
 };
 
 export const getTotalData = async (req) => {
-  const company = await Company.find({ isDeleted: false });
-  const tenant = await Tenant.find({ isDeleted: false });
-  const agent = await Agent.find({ isDeleted: false });
-  const properties = await Property.find({ isDeleted: false });
-  const subscriptionPlan = await Subscription.find();
-  const activeCompany = await Company.find({ isDeleted: false, status: true });
+  const company = await getRepository("Company").find({
+    where: { isDeleted: false },
+  });
+  const tenant = await getRepository("Tenant").find({
+    where: { isDeleted: false },
+  });
+  const agent = await getRepository("Staff").find({
+    where: { isDeleted: false },
+  });
+  const properties = await getRepository("Property").find({
+    where: { isDeleted: false },
+  });
+  const subscriptionPlan = await getRepository("Subscription").find();
+  const activeCompany = await getRepository("Company").find({
+    where: { isDeleted: false, status: true },
+  });
 
   const formattedData = [
     company.length,

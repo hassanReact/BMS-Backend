@@ -1,8 +1,10 @@
-import Maintenance from "../models/maintenance.model.js"
+import AppDataSource from "../core/database/data-source.js";
 import { errorCodes, Message, statusCodes } from "../core/common/constant.js";
 import CustomError from "../utils/exception.js";
-import Property from "../models/property.model.js";
-import UnifiedVoucher from "../models/UnifiedVoucher.model.js";
+
+const maintenanceRepository = AppDataSource.getRepository("Maintenance");
+const propertyRepository = AppDataSource.getRepository("Property");
+const unifiedVoucherRepository = AppDataSource.getRepository("UnifiedVoucher");
 
 export const createMaintenance = async (req, res) => {
     const {
@@ -15,7 +17,7 @@ export const createMaintenance = async (req, res) => {
         companyId
     } = req.body
 
-    const maintenance = await Maintenance.create({
+    const maintenance = maintenanceRepository.create({
         propertyType,
         maintenanceAmount,
         surchargeAmount,
@@ -24,6 +26,7 @@ export const createMaintenance = async (req, res) => {
         maintenanceMonth,
         companyId
     });
+    await maintenanceRepository.save(maintenance);
 
     return maintenance;
 }
@@ -59,11 +62,10 @@ export const editMaintenance = async (req, res) => {
         companyId
     };
 
-    const updatedMaintenance = await Maintenance.findByIdAndUpdate(
-        maintenanceId,
-        updateData,
-        { new: true, runValidators: true }
-    );
+    const maintenance = await maintenanceRepository.findOne({ where: { id: maintenanceId } });
+    const updatedMaintenance = maintenance
+        ? await maintenanceRepository.save(Object.assign(maintenance, updateData))
+        : null;
 
     if (!updatedMaintenance) {
         throw new CustomError(
@@ -74,22 +76,20 @@ export const editMaintenance = async (req, res) => {
     }
 
     // Update related UnifiedVouchers
-    await UnifiedVoucher.updateMany(
-        {
-            'sourceDocument.referenceId': maintenanceId,
-            'sourceDocument.referenceModel': 'Maintenance'
-        },
-        {
-            $set: {
-                'amount.total': maintenanceAmount,
-                'amount.balance': { $subtract: ['$amount.balance', maintenanceAmount] },
-                date: date,
-                month: maintenanceMonth,
-                particulars: `Maintenance Service for ${maintenanceMonth}`,
-                details: `Maintenance service provided for ${maintenanceMonth}`
-            }
-        }
-    );
+    await unifiedVoucherRepository
+        .createQueryBuilder()
+        .update()
+        .set({
+            amount: () => "jsonb_set(jsonb_set(amount, '{total}', to_jsonb(CAST(:maintenanceAmount AS numeric)), true), '{balance}', to_jsonb((amount->>'balance')::numeric - CAST(:maintenanceAmount AS numeric)), true)",
+            date: date,
+            month: maintenanceMonth,
+            particulars: `Maintenance Service for ${maintenanceMonth}`,
+            details: `Maintenance service provided for ${maintenanceMonth}`
+        })
+        .where("source_document->>'referenceId' = :maintenanceId", { maintenanceId })
+        .andWhere("source_document->>'referenceModel' = :referenceModel", { referenceModel: "Maintenance" })
+        .setParameter("maintenanceAmount", maintenanceAmount)
+        .execute();
 
     return updatedMaintenance;
 };
@@ -97,7 +97,7 @@ export const editMaintenance = async (req, res) => {
 export const deleteMaintenance = async (req, res) => {
     const maintenance = req.query.id;
 
-    const maintenanceData = await Maintenance.findById(maintenance);
+    const maintenanceData = await maintenanceRepository.findOne({ where: { id: maintenance } });
     if (!maintenanceData) {
         throw new CustomError(
             statusCodes?.notFound,
@@ -107,7 +107,7 @@ export const deleteMaintenance = async (req, res) => {
     }
 
     maintenanceData.isDeleted = true;
-    await maintenanceData.save();
+    await maintenanceRepository.save(maintenanceData);
 
     return maintenanceData
 };
@@ -115,10 +115,13 @@ export const deleteMaintenance = async (req, res) => {
 export const getMaintenance = async (req, res) => {
     const companyId = req.query.id;
 
-    const maintenance = await Maintenance.find({
-        companyId,
-        isDeleted: false,
-    }).sort({ createdAt: -1 });
+    const maintenance = await maintenanceRepository.find({
+        where: {
+            companyId,
+            isDeleted: false,
+        },
+        order: { createdAt: "DESC" },
+    });
 
     if (!maintenance) {
         throw new CustomError(
@@ -141,10 +144,6 @@ export const applyToOccupied = async (req, res) => {
     } = req.body;
 
     try {
-        // Debug: Log which model we're using
-        console.log('Using model:', UnifiedVoucher.modelName);
-        console.log('Collection name:', UnifiedVoucher.collection.name);
-
         // Debug: Log the search criteria
         console.log('Search criteria:', {
             companyId,
@@ -154,33 +153,37 @@ export const applyToOccupied = async (req, res) => {
         });
 
         // First, let's check if there are any properties at all for this company
-        const allProperties = await Property.find({ companyId, isDeleted: false });
+        const allProperties = await propertyRepository.find({ where: { companyId, isDeleted: false } });
         console.log(`Total properties for company: ${allProperties.length}`);
 
         // Check properties by vacancy status
-        const vacantProperties = await Property.find({ companyId, isDeleted: false, isVacant: true });
-        const occupiedProperties = await Property.find({ companyId, isDeleted: false, isVacant: false });
+        const vacantProperties = await propertyRepository.find({ where: { companyId, isDeleted: false, isVacant: true } });
+        const occupiedProperties = await propertyRepository.find({ where: { companyId, isDeleted: false, isVacant: false } });
         console.log(`Vacant properties: ${vacantProperties.length}`);
         console.log(`Occupied properties: ${occupiedProperties.length}`);
 
-        const OccupiedProperties = await Property.find({
-            companyId,
-            isDeleted: false,
-            isVacant: false,
-            maintencanceHistory: {
-                $not: { $elemMatch: { Month: maintenanceMonth } }
-            }
-        });
+        const OccupiedProperties = await propertyRepository
+            .createQueryBuilder("property")
+            .where("property.company_id = :companyId", { companyId })
+            .andWhere("property.is_deleted = false")
+            .andWhere("property.is_vacant = false")
+            .andWhere(
+                "NOT EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(property.maintencance_history, '[]'::jsonb)) AS history WHERE history->>'Month' = :maintenanceMonth)",
+                { maintenanceMonth }
+            )
+            .getMany();
 
         console.log(`Properties without maintenance for ${maintenanceMonth}: ${OccupiedProperties.length}`);
 
         if (!OccupiedProperties.length) {
             // Let's check what properties exist and their maintenance history
-            const propertiesWithHistory = await Property.find({
-                companyId,
-                isDeleted: false,
-                isVacant: false
-            }).select('propertyname maintencanceHistory');
+            const propertiesWithHistory = await propertyRepository.find({
+                where: {
+                    companyId,
+                    isDeleted: false,
+                    isVacant: false
+                }
+            });
 
             console.log('Properties with maintenance history:', propertiesWithHistory.map(p => ({
                 name: p.propertyname,
@@ -199,7 +202,7 @@ export const applyToOccupied = async (req, res) => {
 
 
                 // Create Unified Voucher (Maintenance) for each property
-                const voucher = await UnifiedVoucher.create({
+                const voucher = unifiedVoucherRepository.create({
                     voucherNo: voucherNo,
                     voucherType: 'MDN', // Maintenance
                     companyId,
@@ -207,7 +210,7 @@ export const applyToOccupied = async (req, res) => {
                     month: maintenanceMonth,
                     particulars: `Maintenance Service for ${property.propertyname}`,
                     debit: {
-                        accountId: property._id, // Property/Customer account
+                        accountId: property.id, // Property/Customer account
                         accountType: 'Property',
                         accountName: property.propertyname
                     },
@@ -216,9 +219,11 @@ export const applyToOccupied = async (req, res) => {
                         accountType: 'Company',
                         accountName: 'Company'
                     },
-                    "amount.total": maintenanceAmount,
-                    "amount.balance": maintenanceAmount,
-                    propertyId: property._id,
+                    amount: Number(maintenanceAmount) || 0,
+                    outstandingAmount: Number(maintenanceAmount) || 0,
+                    totalAmountOwed: Number(maintenanceAmount) || 0,
+                    surchargeAmount: 0,
+                    propertyId: property.id,
                     propertyName: property.propertyname,
                     sourceDocument: {
                         referenceId: _id,
@@ -229,23 +234,21 @@ export const applyToOccupied = async (req, res) => {
                     tags: ['Maintenance', 'Service', maintenanceMonth],
                     details: `Maintenance service provided for ${maintenanceMonth}`
                 });
+                await unifiedVoucherRepository.save(voucher);
 
-                console.log(`Created voucher with ID: ${voucher._id}`);
+                console.log(`Created voucher with ID: ${voucher.id}`);
 
                 // Update Property's maintencanceHistory
-                await Property.updateOne(
-                    { _id: property._id },
+                property.maintencanceHistory = [
+                    ...(property.maintencanceHistory || []),
                     {
-                        $push: {
-                            maintencanceHistory: {
-                                Month: maintenanceMonth,
-                                status: "Pending",
-                                maintenanceId: _id,
-                                voucherId: voucher._id // Link to the voucher
-                            }
-                        }
+                        Month: maintenanceMonth,
+                        status: "Pending",
+                        maintenanceId: _id,
+                        voucherId: voucher.id
                     }
-                );
+                ];
+                await propertyRepository.save(property);
 
                 createdVouchers.push(voucher);
             })

@@ -5,7 +5,7 @@ import { createAgent ,editAgent, agentLogin, getAllAgent,deleteAgent,getAgentByI
 const router = Router();
 
 router.post("/register", asyncHandler(createAgent));
-router.post("/login", asyncHandler(agentLogin));
+// router.post("/login", asyncHandler(agentLogin));
 router.put("/edit", asyncHandler(editAgent));
 router.get("/getAllAgent", asyncHandler(getAllAgent));
 router.patch("/delete", asyncHandler(deleteAgent));

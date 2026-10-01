@@ -1,12 +1,46 @@
-import User from "../models/user.model.js";
+import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
+import AppDataSource from "../core/database/data-source.js";
 import { errorCodes, Message, statusCodes } from "../core/common/constant.js";
 import CustomError from "../utils/exception.js";
+
+const getUserRepository = () => AppDataSource.getRepository("User");
+
+const withoutSensitiveFields = ({ password, refreshToken, ...user }) => user;
+
+export const hashPassword = async (password) => bcrypt.hash(password, 10);
+
+// const generateAccessToken = (user) =>
+//   jwt.sign(
+//     {
+//       _id: user.id,
+//       email: user.email,
+//       role: user.role,
+//     },
+//     process.env.ACCESS_TOKEN_SECRET,
+//     { expiresIn: process.env.ACCESS_TOKEN_EXPIRY }
+//   );
+
+// const generateRefreshToken = (user) =>
+//   jwt.sign(
+//     {
+  //     _id: user.id,
+  //     email: user.email,
+  //     role: user.role,
+  //   },
+  //   process.env.REFRESH_TOKEN_SECRET,
+  //   { expiresIn: process.env.REFRESH_TOKEN_EXPIRY }
+  // );
 
 export const registerUser = async (req) => {
   const { fullname, email, password, phoneNo, role, address } =
     req.body;
 
-  const isUserAlreadyExist = await User.findOne({ email });
+  const userRepository = getUserRepository();
+  const normalizedEmail = email?.trim().toLowerCase();
+  const isUserAlreadyExist = await userRepository.findOne({
+    where: { email: normalizedEmail },
+  });
 
   if (isUserAlreadyExist) {
     throw new CustomError(
@@ -16,18 +50,22 @@ export const registerUser = async (req) => {
     );
   }
 
-  const user = await User.create({
+  const user = userRepository.create({
     fullname,
-    email,
-    password,
+    email: normalizedEmail,
+    password: await hashPassword(password),
     phoneNo,
     role,
     address
   });
+  await userRepository.save(user);
 
-  const createdUser = await User.findById(user._id).select(
-    "-password -refreshToken"
-  );
+  const createdUserRecord = await userRepository.findOne({
+    where: { id: user.id },
+  });
+  const createdUser = createdUserRecord
+    ? withoutSensitiveFields(createdUserRecord)
+    : null;
 
   if (!createdUser) {
     return new CustomError(
@@ -40,68 +78,79 @@ export const registerUser = async (req) => {
   return createdUser;
 };
 
-const generateAccessAndRefreshTokens = async (userId) => {
-  try {
-    const user = await User.findById(userId);
-    const accessToken = user.generateAccessToken();
-    const refreshToken = user.generateRefreshToken();
-
-    user.refreshToken = refreshToken;
-    await user.save({ validateBeforeSave: false });
-    return { accessToken, refreshToken };
-  } catch (error) {
-    throw new CustomError(
-      statusCodes?.internalServerError,
-      "Something went wrong while generating refresh and access tokens.",
-      errorCodes?.server_error
-    );
-  }
+export const comparePassword = async (password, hashedPassword) => {
+  return await bcrypt.compare(password, hashedPassword);
 };
 
-export const loginUser = async (req, res) => {
-  const { email, password } = req.body;
+// const generateAccessAndRefreshTokens = async (userId) => {
+//   try {
+//     const userRepository = getUserRepository();
+//     const user = await userRepository.findOne({ where: { id: userId } });
+//     const accessToken = generateAccessToken(user);
+//     const refreshToken = generateRefreshToken(user);
 
-  const user = await User.findOne({ email });
-  if (!user) {
-    throw new CustomError(
-      statusCodes?.notFound,
-      Message?.notFound,
-      errorCodes?.not_found
-    );
-  }
+//     user.refreshToken = refreshToken;
+//     await userRepository.save(user);
+//     return { accessToken, refreshToken };
+//   } catch (error) {
+//     throw new CustomError(
+//       statusCodes?.internalServerError,
+//       "Something went wrong while generating refresh and access tokens.",
+//       errorCodes?.server_error
+//     );
+//   }
+// };
 
-  const passwordVerify = await user.isPasswordCorrect(password);
+// export const loginUser = async (req, res) => {
+//   const { email, password } = req.body;
 
-  if (!passwordVerify) {
-    throw new CustomError(
-      statusCodes?.badRequest,
-      Message?.inValid,
-      errorCodes?.invalid_credentials
-    );
-  }
+//   const userRepository = getUserRepository();
+//   const user = await userRepository.findOne({
+//     where: { email: email?.trim().toLowerCase() },
+//   });
+//   if (!user) {
+//     throw new CustomError(
+//       statusCodes?.notFound,
+//       Message?.notFound,
+//       errorCodes?.not_found
+//     );
+//   }
 
-  const { accessToken, refreshToken } = await generateAccessAndRefreshTokens(
-    user._id
-  );
+//   const passwordVerify = await bcrypt.compare(password, user.password);
 
-  const loginUser = await User.findById(user._id).select(
-    "-password -refreshToken"
-  );
+//   if (!passwordVerify) {
+//     throw new CustomError(
+//       statusCodes?.badRequest,
+//       Message?.inValid,
+//       errorCodes?.invalid_credentials
+//     );
+//   }
 
-  res.setHeader("token", accessToken);
+//   const { accessToken, refreshToken } = await generateAccessAndRefreshTokens(
+//     user.id
+//   );
 
-  const options = {
-    httpOnly: true,
-    secure: true,
-  };
+//   const loginUserRecord = await userRepository.findOne({
+//     where: { id: user.id },
+//   });
+//   const loginUser = loginUserRecord
+//     ? withoutSensitiveFields(loginUserRecord)
+//     : null;
 
-  return {
-    role: user.role,
-    accessToken,
-    refreshToken,
-    options,
-    loginUser,
-  };
+//   res.setHeader("token", accessToken);
+
+//   const options = {
+//     httpOnly: true,
+//     secure: true,
+//   };
+
+//   return {
+//     role: user.role,
+//     accessToken,
+//     refreshToken,
+//     options,
+//     loginUser,
+//   };
 
   
-};
+// };

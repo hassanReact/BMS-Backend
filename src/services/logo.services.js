@@ -1,20 +1,21 @@
 
 import { errorCodes, Message, statusCodes } from "../core/common/constant.js";
 import CustomError from "../utils/exception.js";
-import Company from "../models/company.model.js";
+import AppDataSource from "../core/database/data-source.js";
+
+const companyRepository = AppDataSource.getRepository("Company");
 
 
 export const uploadLogo = async (req, res) => {
   
     const companyId = req.query.id;
 
-    const updatedCompany = await Company.findByIdAndUpdate(
-      companyId,
-      {
-        companyLogo: `uploads/${req.file.filename}`,
-      },
-      { new: true } 
-    );
+    const company = await companyRepository.findOne({ where: { id: companyId } });
+    const updatedCompany = company
+      ? await companyRepository.save(Object.assign(company, {
+          companyLogo: `uploads/${req.file.filename}`,
+        }))
+      : null;
 
     if (!updatedCompany) {
       throw new CustomError(
@@ -39,7 +40,7 @@ export const getUploadedLogo = async (req, res) => {
     );
   }
 
-  const company = await Company.findById(companyId);
+  const company = await companyRepository.findOne({ where: { id: companyId } });
 
   if (!company) {
     throw new CustomError(

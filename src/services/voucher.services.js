@@ -1,5 +1,6 @@
-import AccountsVoucher from "../models/accountsVoucher.model.js";
-import mongoose from 'mongoose';
+import AppDataSource from "../core/database/data-source.js";
+
+const accountVoucherRepository = AppDataSource.getRepository("AccountVoucher");
 
 export const allVoucher = async (req, res) => {
     const {
@@ -17,68 +18,81 @@ export const allVoucher = async (req, res) => {
         throw new Error('Company ID is required');
     }
 
-    // Build filter object
-    const filter = { companyId, isDeleted: false };
-
-    if (voucherType) {
-        filter.voucherType = voucherType;
-    }
-
-    if (search) {
-        filter.$or = [
-            { voucherNo: { $regex: search, $options: 'i' } },
-            { particulars: { $regex: search, $options: 'i' } },
-            { details: { $regex: search, $options: 'i' } }
-        ];
-    }
-
-    if (startDate || endDate) {
-        filter.date = {};
-        if (startDate) {
-            const start = new Date(startDate);
-            if (isNaN(start.getTime())) {
-                throw new Error('Invalid start date format');
-            }
-            filter.date.$gte = start;
-        }
-        if (endDate) {
-            const end = new Date(endDate);
-            if (isNaN(end.getTime())) {
-                throw new Error('Invalid end date format');
-            }
-            // Set to end of day
-            end.setHours(23, 59, 59, 999);
-            filter.date.$lte = end;
-        }
-    }
-
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.max(1, Math.min(100, parseInt(limit))); // Limit max to 100
     const skip = (pageNum - 1) * limitNum;
 
     try {
-        const [vouchers, totalCount] = await Promise.all([
-            AccountsVoucher.find(filter)
-                .populate('companyId', 'companyName')
-                .sort({ createdAt: -1 })
-                .skip(skip)
-                .limit(limitNum),
-            AccountsVoucher.countDocuments(filter)
-        ]);
+        const query = accountVoucherRepository
+            .createQueryBuilder("voucher")
+            .leftJoinAndSelect("voucher.company", "company")
+            .where("voucher.company_id = :companyId", { companyId })
+            .andWhere("voucher.is_deleted = false");
+
+        if (voucherType) {
+            query.andWhere("voucher.voucher_type = :voucherType", { voucherType });
+        }
+
+        if (search) {
+            query.andWhere(
+                "voucher.voucher_no ILIKE :search OR voucher.particulars ILIKE :search OR voucher.details ILIKE :search",
+                { search: `%${search}%` }
+            );
+        }
+
+        if (startDate || endDate) {
+            let start;
+            let end;
+            if (startDate) {
+                start = new Date(startDate);
+                if (isNaN(start.getTime())) {
+                    throw new Error('Invalid start date format');
+                }
+            }
+            if (endDate) {
+                end = new Date(endDate);
+                if (isNaN(end.getTime())) {
+                    throw new Error('Invalid end date format');
+                }
+                // Set to end of day
+                end.setHours(23, 59, 59, 999);
+            }
+            query.andWhere("voucher.date BETWEEN :start AND :end", {
+                start: start || new Date(0),
+                end: end || new Date(8640000000000000)
+            });
+        }
+
+        const [vouchers, totalCount] = await query
+            .orderBy("voucher.created_at", "DESC")
+            .skip(skip)
+            .take(limitNum)
+            .getManyAndCount();
 
         console.log(vouchers)
+        for (let voucher of vouchers) {
+            if (voucher.company) {
+                voucher.companyId = voucher.company;
+                delete voucher.company;
+            }
+        }
+
         // Manual population for dynamic references
         for (let voucher of vouchers) {
             // Populate credit
             if (voucher.credit?.id && voucher.credit?.model) {
                 try {
-                    const CreditModel = mongoose.model(voucher.credit.model);
-                    const creditDoc = await CreditModel.findById(voucher.credit.id)
-                        .select('accountName name')
-                        .lean();
-                    voucher.credit.id = creditDoc;
+                    const creditRepository = AppDataSource.getRepository(voucher.credit.model);
+                    const creditDoc = await creditRepository.findOne({
+                        where: { id: voucher.credit.id }
+                    });
+                    voucher.credit.id = creditDoc ? {
+                        id: creditDoc.id,
+                        accountName: creditDoc.accountName,
+                        name: creditDoc.name
+                    } : creditDoc;
                 } catch (error) {
-                    console.log(`Error populating credit for voucher ${voucher._id}:`, error.message);
+                    console.log(`Error populating credit for voucher ${voucher.id}:`, error.message);
                     // Keep the original ObjectId if population fails
                 }
             }
@@ -86,13 +100,17 @@ export const allVoucher = async (req, res) => {
             // Populate debit
             if (voucher.debit?.id && voucher.debit?.model) {
                 try {
-                    const DebitModel = mongoose.model(voucher.debit.model);
-                    const debitDoc = await DebitModel.findById(voucher.debit.id)
-                        .select('accountName name')
-                        .lean();
-                    voucher.debit.id = debitDoc;
+                    const debitRepository = AppDataSource.getRepository(voucher.debit.model);
+                    const debitDoc = await debitRepository.findOne({
+                        where: { id: voucher.debit.id }
+                    });
+                    voucher.debit.id = debitDoc ? {
+                        id: debitDoc.id,
+                        accountName: debitDoc.accountName,
+                        name: debitDoc.name
+                    } : debitDoc;
                 } catch (error) {
-                    console.log(`Error populating debit for voucher ${voucher._id}:`, error.message);
+                    console.log(`Error populating debit for voucher ${voucher.id}:`, error.message);
                     // Keep the original ObjectId if population fails
                 }
             }
@@ -130,12 +148,16 @@ export const deleteVoucherById = async (req, res) => {
     }
 
     // Check if voucher exists and belongs to the company
-    const voucher = await AccountsVoucher.findOneAndUpdate({
-        _id: id,
-        companyId: companyId
-    }, {
-        isDeleted: true
+    const voucher = await accountVoucherRepository.findOne({
+        where: { id, companyId }
     });
+
+    if (voucher) {
+        await accountVoucherRepository.update(
+            { id, companyId },
+            { isDeleted: true }
+        );
+    }
 
     if (!voucher) {
         throw new Error(404, 'Voucher not found or access denied');

@@ -1,15 +1,20 @@
-import Property from "../models/property.model.js";
+import AppDataSource from "../core/database/data-source.js";
 import { errorCodes, Message, statusCodes } from "../core/common/constant.js";
 import CustomError from "../utils/exception.js";
-import jwt from "jsonwebtoken";
-import Owner from "../models/owner.model.js";
-import Booking from "../models/booking,model.js";
-import Company from "../models/company.model.js";
-import PropertyImg from "../models/propertyImages.model.js";
 import { sendEmail } from "../core/helpers/mail.js";
 import sendWhatsApp from "../core/helpers/twillio.js";
-import Type from "../models/types.model.js";
-import mongoose from "mongoose";
+
+const propertyRepository = AppDataSource.getRepository("Property");
+const propertyImgRepository = AppDataSource.getRepository("PropertyImg");
+const ownerRepository = AppDataSource.getRepository("Owner");
+const typeRepository = AppDataSource.getRepository("Type");
+const companyRepository = AppDataSource.getRepository("Company");
+
+const isValidUuid = (value) =>
+  typeof value === "string" &&
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(
+    value
+  );
 
 export const createProperty = async (req, res) => {
   const {
@@ -20,7 +25,6 @@ export const createProperty = async (req, res) => {
     zipcode,
     maplink,
     rent,
-    //maintenance,
     area,
     ownerId,
     tenantId,
@@ -30,33 +34,22 @@ export const createProperty = async (req, res) => {
     companyId,
   } = req.body;
 
-  // const isPropertyAlreadyExist = await Property.findOne({ propertyname });
-  // if (isPropertyAlreadyExist) {
-  //   return new CustomError(
-  //     statusCodes?.notFound,
-  //     Message?.notFound,
-  //     errorCodes?.not_found
-  //   );
-  // }
-
   let filePaths = [];
   if (req.files && req.files.length > 0) {
     filePaths = req.files.map((file) => `uploads/${file.filename}`);
   }
 
-  // Create the property
-  const property = await Property.create({
+  const property = await propertyRepository.save({
     propertyname,
-    typeId,
+    typeId: typeId !== "null" && isValidUuid(typeId) ? typeId : null,
     description,
     address,
     zipcode,
     maplink,
     rent,
-    //maintenance,
     area,
-    ownerId: ownerId !== "null" && mongoose.Types.ObjectId.isValid(ownerId) ? ownerId : null,
-    tenantId: tenantId !== "null" && mongoose.Types.ObjectId.isValid(tenantId) ? tenantId : null,
+    ownerId: ownerId !== "null" && isValidUuid(ownerId) ? ownerId : null,
+    tenantId: tenantId !== "null" && isValidUuid(tenantId) ? tenantId : null,
     projectId,
     blockId,
     accountName,
@@ -72,17 +65,16 @@ export const createProperty = async (req, res) => {
     );
   }
 
-  // Send notifications only if we have valid owner and type IDs
   if (
     ownerId !== "null" &&
     typeId !== "null" &&
-    mongoose.Types.ObjectId.isValid(ownerId) &&
-    mongoose.Types.ObjectId.isValid(typeId)
+    isValidUuid(ownerId) &&
+    isValidUuid(typeId)
   ) {
-    const type = await Type.findById(typeId).lean();
-    const owner = await Owner.findById(ownerId).lean();
-    const CompanyDetails = await Company.findById(companyId);
-    
+    const type = await typeRepository.findOne({ where: { id: typeId } });
+    const owner = await ownerRepository.findOne({ where: { id: ownerId } });
+    const CompanyDetails = await companyRepository.findOne({ where: { id: companyId } });
+
     if (owner && type && CompanyDetails) {
       if (process.env.FEATURE_EMAIL == "on" && CompanyDetails.isMailStatus) {
         await sendMailToOwnerEmail(owner, property, CompanyDetails, type);
@@ -169,7 +161,7 @@ export const sendMailToOwnerEmail = async (
       owner.email,
       "Property Registration Confirmation",
       htmlContent,
-      companyDetails._id
+      companyDetails.id
     );
   } catch (err) {
     console.error("Failed to send property registration email:", err);
@@ -194,7 +186,6 @@ export const editProperty = async (req, res) => {
     zipcode,
     maplink,
     rent,
-    //maintenance,
     area,
     ownerId,
     tenantId,
@@ -225,7 +216,6 @@ export const editProperty = async (req, res) => {
     zipcode,
     maplink,
     rent,
-    //maintenance,
     area,
     ownerId,
     tenantId,
@@ -235,33 +225,30 @@ export const editProperty = async (req, res) => {
     companyId,
     ...(filePath && { files: filePath }),
   };
-  const updatedProperty = await Property.findByIdAndUpdate(
-    propertyId,
-    updateData,
-    { new: true, runValidators: true }
-  );
 
-  if (!updatedProperty) {
+  const property = await propertyRepository.findOne({ where: { id: propertyId } });
+
+  if (!property) {
     return res.status(404).json({
       message: "Property not found.",
       errorCode: "property_not_found",
     });
   }
 
+  propertyRepository.merge(property, updateData);
+  const updatedProperty = await propertyRepository.save(property);
+
   return updatedProperty;
 };
 
-export const uploadImages = async (req, res, next) => { 
-  // const tenantId = req.query.id;
-
+export const uploadImages = async (req, res, next) => {
   const { name, propertyId } = req.body;
 
-  const document = await PropertyImg.create({
+  const document = await propertyImgRepository.save({
     propertyId,
     documentName: name,
     url: `uploads/${req.file.filename}`,
   });
-
 
   if (!document) {
     throw new CustomError(
@@ -277,10 +264,10 @@ export const uploadImages = async (req, res, next) => {
 export const getAllImages = async (req, res, next) => {
   const { id: propertyId } = req.query;
 
-  const propertyImg = await PropertyImg.find({
-    propertyId,
-    // isDeleted: false,
-  }).sort({ createdAt: -1 });
+  const propertyImg = await propertyImgRepository.find({
+    where: { propertyId },
+    order: { createdAt: "DESC" },
+  });
 
   if (!propertyImg) {
     throw new CustomError(
@@ -295,11 +282,10 @@ export const getAllImages = async (req, res, next) => {
 
 export const getProperty = async (req, res, next) => {
   const companyId = req.query.id;
-  const Properties = await Property.find({
-    companyId,
-    isDeleted: false,
-    isVacant: true,
-  }).sort({ createdAt: -1 });
+  const Properties = await propertyRepository.find({
+    where: { companyId, isDeleted: false, isVacant: true },
+    order: { createdAt: "DESC" },
+  });
   if (!Properties) {
     return new CustomError(
       statusCodes?.serviceUnavailable,
@@ -312,11 +298,11 @@ export const getProperty = async (req, res, next) => {
 
 export const getAllProperties = async (req, res, next) => {
   const companyId = req.query.id;
-  const Properties = await Property.find({ companyId, isDeleted: false })
-    .populate("typeId")
-    .populate("projectId")
-    .populate("blockId")
-    .sort({ createdAt: -1 });
+  const Properties = await propertyRepository.find({
+    where: { companyId, isDeleted: false },
+    relations: ["type", "project", "block"],
+    order: { createdAt: "DESC" },
+  });
   if (!Properties) {
     return new CustomError(
       statusCodes?.serviceUnavailable,
@@ -329,11 +315,10 @@ export const getAllProperties = async (req, res, next) => {
 
 export const getVacantProperty = async (req, res, next) => {
   const companyId = req.query.id;
-  const Properties = await Property.find({
-    companyId,
-    isDeleted: false,
-    isVacant: true,
-  }).sort({ createdAt: -1 });
+  const Properties = await propertyRepository.find({
+    where: { companyId, isDeleted: false, isVacant: true },
+    order: { createdAt: "DESC" },
+  });
   if (!Properties) {
     return new CustomError(
       statusCodes?.serviceUnavailable,
@@ -347,7 +332,7 @@ export const getVacantProperty = async (req, res, next) => {
 export const deleteProperty = async (req, res) => {
   const propertyId = req.query.id;
 
-  const property = await Property.findById(propertyId);
+  const property = await propertyRepository.findOne({ where: { id: propertyId } });
   if (!property) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -357,7 +342,7 @@ export const deleteProperty = async (req, res) => {
   }
 
   property.isDeleted = true;
-  await property.save();
+  await propertyRepository.save(property);
 
   return property;
 };
@@ -365,7 +350,7 @@ export const deleteProperty = async (req, res) => {
 export const deletePropertyImg = async (req, res) => {
   const propertyId = req.query.id;
 
-  const property = await PropertyImg.findByIdAndDelete(propertyId);
+  const property = await propertyImgRepository.findOne({ where: { id: propertyId } });
 
   if (!property) {
     throw new CustomError(
@@ -374,27 +359,18 @@ export const deletePropertyImg = async (req, res) => {
       errorCodes?.not_found
     );
   }
+
+  await propertyImgRepository.remove(property);
   return property;
 };
 
 export const getPropertyById = async (req, res) => {
   const propertyId = req.query.id;
 
-  // const booking = await Booking.findById(id)
-  // .populate("tenantId")
-  // .populate("propertyId")
-  // .populate("companyId")
-  // .sort({ createdAt: -1 })
-  // .lean();
-
-  const property = await Property.findById(propertyId)
-    .populate("typeId")
-    .populate("ownerId")
-    .populate("tenantId")
-    .populate("projectId")
-    .populate("blockId")
-    .sort({ createdAt: -1 })
-    .lean();
+  const property = await propertyRepository.findOne({
+    where: { id: propertyId },
+    relations: ["type", "owner", "tenant", "project", "block"],
+  });
 
   if (!property) {
     throw new CustomError(
@@ -406,9 +382,9 @@ export const getPropertyById = async (req, res) => {
   return property;
 };
 
-export const uploadProperty = (req, res) => {
+export const uploadProperty = async (req, res) => {
   const { id } = req.query;
-  const company = Company.findById(id);
+  const company = await companyRepository.findOne({ where: { id } });
   if (!company) {
     return new CustomError(
       statusCodes?.serviceUnavailable,
@@ -422,9 +398,3 @@ export const uploadProperty = (req, res) => {
   }
   return Files;
 };
-
-// export const getPropertyDashboard = async (req, res) => {
-//   const id = req.query.id;
-  
-
-// }
