@@ -197,86 +197,86 @@ const sendStaffRegistrationEmail = async (staff, CompanyDetails) => {
   }
 };
 
-const generateAccessAndRefreshTokens = async (userId) => {
-  try {
-    const staffUser = await getRepository("Staff").findOne({ where: { id: userId } });
-    const user = staffUser
-      ? await getRepository("User").findOne({ where: { id: staffUser.userId } })
-      : null;
-    const userRole = user
-      ? await getRepository("UserRole").findOne({
-          where: { userId: user.id, status: "active" },
-          relations: { role: true, company: true },
-        })
-      : null;
-    const payload = {
-      userId: user.id,
-      email: user.email,
-      role: userRole?.role?.name,
-      roleId: userRole?.role?.id,
-      companyId: userRole?.company?.id || null,
-    };
-    const accessToken = jwt.sign(payload, process.env.ACCESS_TOKEN_SECRET, { expiresIn: process.env.ACCESS_TOKEN_EXPIRY });
-    const refreshToken = jwt.sign(payload, process.env.REFRESH_TOKEN_SECRET, { expiresIn: process.env.REFRESH_TOKEN_EXPIRY });
+// const generateAccessAndRefreshTokens = async (userId) => {
+//   try {
+//     const staffUser = await getRepository("Staff").findOne({ where: { id: userId } });
+//     const user = staffUser
+//       ? await getRepository("User").findOne({ where: { id: staffUser.userId } })
+//       : null;
+//     const userRole = user
+//       ? await getRepository("UserRole").findOne({
+//           where: { userId: user.id, status: "active" },
+//           relations: { role: true, company: true },
+//         })
+//       : null;
+//     const payload = {
+//       userId: user.id,
+//       email: user.email,
+//       role: userRole?.role?.name,
+//       roleId: userRole?.role?.id,
+//       companyId: userRole?.company?.id || null,
+//     };
+//     const accessToken = jwt.sign(payload, process.env.ACCESS_TOKEN_SECRET, { expiresIn: process.env.ACCESS_TOKEN_EXPIRY });
+//     const refreshToken = jwt.sign(payload, process.env.REFRESH_TOKEN_SECRET, { expiresIn: process.env.REFRESH_TOKEN_EXPIRY });
 
-    user.refreshToken = refreshToken;
-    await getRepository("User").save(user);
-    return { accessToken, refreshToken };
-  } catch (error) {
-    throw new CustomError(
-      statusCodes?.internalServerError,
-      "Something went wrong while generating refresh and access tokens.",
-      errorCodes?.server_error
-    );
-  }
-};
+//     user.refreshToken = refreshToken;
+//     await getRepository("User").save(user);
+//     return { accessToken, refreshToken };
+//   } catch (error) {
+//     throw new CustomError(
+//       statusCodes?.internalServerError,
+//       "Something went wrong while generating refresh and access tokens.",
+//       errorCodes?.server_error
+//     );
+//   }
+// };
 
 
 //contain errors
-export const loginStaff = async (req, res) => {
-  const { email, password } = req.body;
+// export const loginStaff = async (req, res) => {
+//   const { email, password } = req.body;
 
-  const staffUser = await getRepository("Staff").findOne({ where: { email } });
+//   const staffUser = await getRepository("Staff").findOne({ where: { email } });
 
-  if (!staffUser) {
-    throw new CustomError(
-      statusCodes?.notFound,
-      Message?.notFound,
-      errorCodes?.not_found
-    );
-  }
+//   if (!staffUser) {
+//     throw new CustomError(
+//       statusCodes?.notFound,
+//       Message?.notFound,
+//       errorCodes?.not_found
+//     );
+//   }
 
-  const user = await getRepository("User").findOne({ where: { id: staffUser.userId } });
-  const passwordVerify = await comparePassword(password, user.password);
+//   const user = await getRepository("User").findOne({ where: { id: staffUser.userId } });
+//   const passwordVerify = await comparePassword(password, user.password);
 
-  if (!passwordVerify) {
-    throw new CustomError(
-      statusCodes?.badRequest,
-      Message?.inValid,
-      errorCodes?.invalid_credentials
-    );
-  }
+//   if (!passwordVerify) {
+//     throw new CustomError(
+//       statusCodes?.badRequest,
+//       Message?.inValid,
+//       errorCodes?.invalid_credentials
+//     );
+//   }
 
-  const { accessToken, refreshToken } = await generateAccessAndRefreshTokens(
-    staffUser.id
-  );
+//   const { accessToken, refreshToken } = await generateAccessAndRefreshTokens(
+//     staffUser.id
+//   );
 
-  const loginstaff = await getRepository("Staff").findOne({ where: { id: staffUser.id } });
+//   const loginstaff = await getRepository("Staff").findOne({ where: { id: staffUser.id } });
 
-  res.setHeader("token", accessToken);
+//   res.setHeader("token", accessToken);
 
-  const options = {
-    httpOnly: true,
-    secure: true,
-  };
+//   const options = {
+//     httpOnly: true,
+//     secure: true,
+//   };
 
-  return {
-    accessToken,
-    refreshToken,
-    options,
-    loginstaff,
-  };
-};
+//   return {
+//     accessToken,
+//     refreshToken,
+//     options,
+//     loginstaff,
+//   };
+// };
 
 export const editStaff = async (req, res, next) => {
   const staffId = req.query.id;
