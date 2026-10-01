@@ -187,87 +187,87 @@ const sendEmailToTenant = async (tenant, CompanyDetails) => {
 };
 
 
-const generateAccessAndRefreshTokens = async (userId) => {
-  try {
-    const tenant = await getRepository("Tenant").findOne({ where: { id: userId } });
-    const user = tenant
-      ? await getRepository("User").findOne({ where: { id: tenant.userId } })
-      : null;
-    const userRole = user
-      ? await getRepository("UserRole").findOne({
-          where: { userId: user.id, status: "active" },
-          relations: { role: true, company: true },
-        })
-      : null;
-    const payload = {
-      userId: user.id,
-      email: user.email,
-      role: userRole?.role?.name,
-      roleId: userRole?.role?.id,
-      companyId: userRole?.company?.id || null,
-    };
-    const accessToken = jwt.sign(payload, process.env.ACCESS_TOKEN_SECRET, {
-      expiresIn: process.env.ACCESS_TOKEN_EXPIRY,
-    });
-    const refreshToken = jwt.sign(payload, process.env.REFRESH_TOKEN_SECRET, {
-      expiresIn: process.env.REFRESH_TOKEN_EXPIRY,
-    });
+// const generateAccessAndRefreshTokens = async (userId) => {
+//   try {
+//     const tenant = await getRepository("Tenant").findOne({ where: { id: userId } });
+//     const user = tenant
+//       ? await getRepository("User").findOne({ where: { id: tenant.userId } })
+//       : null;
+//     const userRole = user
+//       ? await getRepository("UserRole").findOne({
+//           where: { userId: user.id, status: "active" },
+//           relations: { role: true, company: true },
+//         })
+//       : null;
+//     const payload = {
+//       userId: user.id,
+//       email: user.email,
+//       role: userRole?.role?.name,
+//       roleId: userRole?.role?.id,
+//       companyId: userRole?.company?.id || null,
+//     };
+//     const accessToken = jwt.sign(payload, process.env.ACCESS_TOKEN_SECRET, {
+//       expiresIn: process.env.ACCESS_TOKEN_EXPIRY,
+//     });
+//     const refreshToken = jwt.sign(payload, process.env.REFRESH_TOKEN_SECRET, {
+//       expiresIn: process.env.REFRESH_TOKEN_EXPIRY,
+//     });
 
-    user.refreshToken = refreshToken;
-    await getRepository("User").save(user);
-    return { accessToken, refreshToken };
-  } catch (error) {
-    throw new CustomError(
-      statusCodes?.internalServerError,
-      "Something went wrong while generating refresh and access tokens.",
-      errorCodes?.server_error
-    );
-  }
-};
+//     user.refreshToken = refreshToken;
+//     await getRepository("User").save(user);
+//     return { accessToken, refreshToken };
+//   } catch (error) {
+//     throw new CustomError(
+//       statusCodes?.internalServerError,
+//       "Something went wrong while generating refresh and access tokens.",
+//       errorCodes?.server_error
+//     );
+//   }
+// };
 
-export const loginTenant = async (req, res) => {
-  const { email, password } = req.body;
+// export const loginTenant = async (req, res) => {
+//   const { email, password } = req.body;
 
-  const tenant = await getRepository("Tenant").findOne({ where: { email } });
-  if (!tenant) {
-    throw new CustomError(
-      statusCodes?.notFound,
-      Message?.notFound,
-      errorCodes?.not_found
-    );
-  }
+//   const tenant = await getRepository("Tenant").findOne({ where: { email } });
+//   if (!tenant) {
+//     throw new CustomError(
+//       statusCodes?.notFound,
+//       Message?.notFound,
+//       errorCodes?.not_found
+//     );
+//   }
 
-  const user = await getRepository("User").findOne({ where: { id: tenant.userId } });
-  const passwordVerify = await comparePassword(password, user.password);
+//   const user = await getRepository("User").findOne({ where: { id: tenant.userId } });
+//   const passwordVerify = await comparePassword(password, user.password);
 
-  if (!passwordVerify) {
-    throw new CustomError(
-      statusCodes?.badRequest,
-      Message?.inValid,
-      errorCodes?.invalid_credentials
-    );
-  }
+//   if (!passwordVerify) {
+//     throw new CustomError(
+//       statusCodes?.badRequest,
+//       Message?.inValid,
+//       errorCodes?.invalid_credentials
+//     );
+//   }
 
-  const { accessToken, refreshToken } = await generateAccessAndRefreshTokens(
-    tenant.id
-  );
+//   const { accessToken, refreshToken } = await generateAccessAndRefreshTokens(
+//     tenant.id
+//   );
 
-  const loginTenant = await getRepository("Tenant").findOne({ where: { id: tenant.id } });
+//   const loginTenant = await getRepository("Tenant").findOne({ where: { id: tenant.id } });
 
-  res.setHeader("token", accessToken);
+//   res.setHeader("token", accessToken);
 
-  const options = {
-    httpOnly: true,
-    secure: true,
-  };
+//   const options = {
+//     httpOnly: true,
+//     secure: true,
+//   };
 
-  return {
-    accessToken,
-    refreshToken,
-    options,
-    loginTenant,
-  };
-};
+//   return {
+//     accessToken,
+//     refreshToken,
+//     options,
+//     loginTenant,
+//   };
+// };
 
 export const getTenants = async (req, res, next) => {
   const { id: companyId } = req.query;
