@@ -10,6 +10,7 @@ import AccountsPayableEntity from "../entities/accountsPayable.entity.js";
 import VendorEntity from "../entities/vendor.entity.js";
 import PropertyEntity from "../entities/property.entity.js";
 import { Between, In, IsNull, LessThan } from "typeorm";
+import redisClient from "../core/database/redis.js";
 
 const productRepository = AppDataSource.getRepository(ProductRegistration);
 const purchaseRepository = AppDataSource.getRepository(PurchaseDetails);
@@ -896,6 +897,14 @@ export const allReports = async (req, res) => {
   const companyId = req.query.companyId;
   const skip = (page - 1) * limit;
 
+  const cacheKey = `bms:inventory:reports:${companyId || "all"}:${page}:${limit}`;
+
+const cachedData = await redisClient.get(cacheKey);
+
+if (cachedData) {
+  return JSON.parse(cachedData);
+}
+
   try {
     const products = await productRepository.find({
       where: {
@@ -1002,12 +1011,21 @@ export const allReports = async (req, res) => {
       };
     });
 
-    return {
-      total: products.length,
-      page,
-      limit,
-      data,
-    };
+   const result = {
+  total: products.length,
+  page,
+  limit,
+  data,
+};
+
+await redisClient.setEx(
+  cacheKey,
+  2 * 60,
+  JSON.stringify(result)
+);
+
+return result;
+
   } catch (error) {
     console.error('allReports error:', error);
     throw new CustomError(
@@ -1030,10 +1048,18 @@ export const allActivities = async (req, res) => {
     );
   }
 
+  const cacheKey = `bms:inventory:activities:${companyId || "all"}:${productName}:${startDate || "1970-01-01"}:${endDate || "all"}`;
+
   const start = startDate ? new Date(startDate) : new Date('1970-01-01');
   const end = endDate ? new Date(endDate) : new Date();
 
   const companyFilter = companyId ? { companyId } : {};
+
+  const cachedData = await redisClient.get(cacheKey);
+
+if (cachedData) {
+  return JSON.parse(cachedData);
+}
 
   // Opening balance filter
   const openingFilter = {
@@ -1118,8 +1144,13 @@ export const allActivities = async (req, res) => {
   ];
 
 
-  const result = { productName, report };
+ const result = { productName, report };
 
-  return result;
+await redisClient.setEx(
+  cacheKey,
+  2 * 60,
+  JSON.stringify(result)
+);
 
+return result;
 };
