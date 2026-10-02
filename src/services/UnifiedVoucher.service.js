@@ -1,5 +1,6 @@
 import AppDataSource from "../core/database/data-source.js";
 import { In, MoreThan } from "typeorm";
+import redisClient from "../core/database/redis.js";
 
 const unifiedVoucherRepository = AppDataSource.getRepository("UnifiedVoucher");
 
@@ -565,42 +566,57 @@ class UnifiedVoucherService {
    * Generate monthly summary
    */
   async generateMonthlySummary(companyId, month) {
-    try {
-      const rows = await AppDataSource.manager.query(
-        `
-          SELECT
-            voucher_type AS "_id",
-            COUNT(*)::int AS count,
-            COALESCE(SUM(CAST(amount AS numeric)), 0) AS "totalAmount"
-          FROM unified_vouchers
-          WHERE company_id = $1
-            AND month = $2
-            AND is_deleted = false
-          GROUP BY voucher_type;
-        `,
-        [companyId, month]
-      );
+  try {
+    const cacheKey = `bms:voucher:monthly-summary:${companyId}:${month}`;
 
-      const summary = rows.map((row) => ({
-        _id: row._id,
-        count: Number(row.count),
-        totalAmount: Number(row.totalAmount || 0),
-      }));
+    const cachedData = await redisClient.get(cacheKey);
 
-      return {
-        success: true,
-        data: summary,
-        month,
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: error.message,
-        message: "Failed to generate monthly summary",
-      };
+    if (cachedData !== null) {
+      return JSON.parse(cachedData);
     }
-  }
 
+    const rows = await AppDataSource.manager.query(
+      `
+        SELECT
+          voucher_type AS "_id",
+          COUNT(*)::int AS count,
+          COALESCE(SUM(CAST(amount AS numeric)), 0) AS "totalAmount"
+        FROM unified_vouchers
+        WHERE company_id = $1
+          AND month = $2
+          AND is_deleted = false
+        GROUP BY voucher_type;
+      `,
+      [companyId, month]
+    );
+
+    const summary = rows.map((row) => ({
+      _id: row._id,
+      count: Number(row.count),
+      totalAmount: Number(row.totalAmount || 0),
+    }));
+
+    const result = {
+      success: true,
+      data: summary,
+      month,
+    };
+
+    await redisClient.setEx(
+      cacheKey,
+      5 * 60,
+      JSON.stringify(result)
+    );
+
+    return result;
+  } catch (error) {
+    return {
+      success: false,
+      error: error.message,
+      message: "Failed to generate monthly summary",
+    };
+  }
+}
   /**
    * Get outstanding balance for an account
    */
