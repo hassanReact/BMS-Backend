@@ -5,8 +5,16 @@ import { commentAndResolved } from "../controllers/company.controller.js";
 import AppDataSource from "../core/database/data-source.js";
 import { hashPassword, comparePassword } from "./user.services.js";
 import jwt from "jsonwebtoken";
+import {
+  checkLoginRateLimit,
+  recordFailedLogin,
+  resetLoginRateLimit,
+} from "../utils/redis/loginRateLimit.js";
+import redisClient from "../core/database/redis.js";
 
-const getRepository = (entityName) => AppDataSource.getRepository(entityName);
+function getRepository(entityName) {
+  return AppDataSource.getRepository(entityName);
+}
 
 
 export const companyRegistration = async (req) => {
@@ -165,176 +173,6 @@ export const changePassword = async (req) => {
     : null;
   return result;
 };
-
-// export const companyLogin = async (req, res) => {
-//   const { email, password } = req.body;
-
-//   const company = await Company.findOne({ email });
-//   if (!company) {
-//     throw new CustomError(
-//       statusCodes?.notFound,
-//       Message?.notFound,
-//       errorCodes?.not_found
-//     );
-//   }
-
-//   const passwordVerify = await company.isPasswordCorrect(password);
-
-//   if (!passwordVerify) {
-//     throw new CustomError(
-//       statusCodes?.badRequest,
-//       Message?.inValid,
-//       errorCodes?.invalid_credentials
-//     );
-//   }
-
-//   const { accessToken, refreshToken } = await generateAccessAndRefreshTokens(
-//     company._id
-//   );
-
-//   const loginCompany = await Company.findById(company._id).select(
-//     "-password -refreshToken"
-//   );
-
-//   res.setHeader("token", accessToken);
-
-//   const options = {
-//     httpOnly: true,
-//     secure: true,
-//   };
-
-//   return {
-//     company,
-//     role: company.role,
-//     accessToken,
-//     refreshToken,
-//     options,
-//     loginCompany
-//   };
-// };
-
-// export const universalLogin = async (req, res) => {
-//   const { email, password } = req.body;
-
-//   console.log("🔐 Login attempt for email:", email);
-
-//   let user = null;
-
-//   // Check each user type
-//   const company = await Company.findOne({
-//     email,
-//     isDeleted: false,
-//     status: true,
-//   });
-//   const agent = await Agent.findOne({ email, isDeleted: false, status: true });
-
-//   const tenant = await Tenant.findOne({
-//     email,
-//     isDeleted: false,
-//     status: true,
-//   });
-
-//   const owner = await Owner.findOne({ email, isDeleted: false });
-
-//   // Check if user exists but doesn't meet login criteria
-//   const inactiveCompany = await Company.findOne({ email, isDeleted: false, status: false });
-//   const deletedCompany = await Company.findOne({ email, isDeleted: true });
-//   const inactiveAgent = await Agent.findOne({ email, isDeleted: false, status: false });
-//   const deletedAgent = await Agent.findOne({ email, isDeleted: true });
-//   const inactiveTenant = await Tenant.findOne({ email, isDeleted: false, status: false });
-//   const deletedTenant = await Tenant.findOne({ email, isDeleted: true });
-//   const deletedOwner = await Owner.findOne({ email, isDeleted: true });
-
-//   console.log("🔍 Search results:", {
-//     activeCompany: !!company,
-//     activeAgent: !!agent,
-//     activeTenant: !!tenant,
-//     activeOwner: !!owner,
-//     inactiveCompany: !!inactiveCompany,
-//     inactiveAgent: !!inactiveAgent,
-//     inactiveTenant: !!inactiveTenant,
-//     deletedCompany: !!deletedCompany,
-//     deletedAgent: !!deletedAgent,
-//     deletedTenant: !!deletedTenant,
-//     deletedOwner: !!deletedOwner
-//   });
-
-//   if (company) {
-//     console.log("company")
-//     user = company;
-//   } else if (agent) {
-//     console.log("agent")
-//     user = agent;
-//   } else if (owner) {
-//     console.log("owner")
-//     user = owner;
-//   } else if (tenant) {
-//     console.log("tenant")
-//     user = tenant;
-//   }
-
-//   if (!user) {
-//     // Provide specific error messages based on what we found
-//     if (inactiveCompany || inactiveAgent || inactiveTenant) {
-//       throw new CustomError(
-//         statusCodes?.forbidden,
-//         "Account is inactive. Please contact administrator.",
-//         errorCodes?.account_disabled
-//       );
-//     }
-    
-//     if (deletedCompany || deletedAgent || deletedTenant || deletedOwner) {
-//       throw new CustomError(
-//         statusCodes?.forbidden,
-//         "Account has been deleted. Please contact administrator.",
-//         errorCodes?.account_disabled
-//       );
-//     }
-
-//     throw new CustomError(
-//       statusCodes?.notFound,
-//       "No account found with this email address.",
-//       errorCodes?.not_found
-//     );
-//   }
-
-//   const passwordVerify = await user.isPasswordCorrect(password);
-
-//   // console.log("============>", passwordVerify);
-
-//   if (!passwordVerify) {
-//     throw new CustomError(
-//       statusCodes?.badRequest,
-//       Message?.inValid,
-//       errorCodes?.invalid_credentials
-//     );
-//   }
-
-//   const { accessToken, refreshToken } = await generateAccessAndRefreshTokens(user._id);
-
-//   console.log("==================>", accessToken)
-//   console.log("==================>", refreshToken)
-
-//   const loggedInUser = await user.constructor
-//     .findById(user._id)
-//     .select("-password -refreshToken");
-
-//   res.setHeader("token", accessToken);
-
-//   const options = {
-//     httpOnly: true,
-//     secure: true, // Use true in production
-//   };
-
-//   // Return the response
-//   return {
-//     user: loggedInUser,
-//     role: user.role,
-//     accessToken,
-//     refreshToken,
-//     options,
-//   };
-// };
 export const universalLogin = async (req) => {
   const { email, password } = req.body;
 
@@ -348,6 +186,19 @@ export const universalLogin = async (req) => {
 
   const normalizedEmail = email.toLowerCase().trim();
 
+  const rateLimit = await checkLoginRateLimit({
+  ip: req.ip,
+  email: normalizedEmail,
+});
+
+if (!rateLimit.allowed) {
+  throw new CustomError(
+    statusCodes?.tooManyRequests || 429,
+    "Too many login attempts. Please try again later.",
+    errorCodes?.too_many_requests
+  );
+}
+
   // 1. Find authentication account
   const userRepository = getRepository("User");
   const userRoleRepository = getRepository("UserRole");
@@ -355,24 +206,39 @@ export const universalLogin = async (req) => {
     where: { email: normalizedEmail, isDeleted: false },
   });
 
-  if (!user) {
-    throw new CustomError(
-      statusCodes?.notFound,
-      "No account found with this email address.",
-      errorCodes?.not_found
-    );
-  }
+if (!user) {
+  await recordFailedLogin({
+    ip: req.ip,
+    email: normalizedEmail,
+  });
+
+  throw new CustomError(
+    statusCodes?.notFound,
+    "No account found with this email address.",
+    errorCodes?.not_found
+  );
+}
 
   // 2. Check password
   const passwordCorrect = await comparePassword(password, user.password);
 
-  if (!passwordCorrect) {
-    throw new CustomError(
-      statusCodes?.badRequest,
-      Message?.inValid,
-      errorCodes?.invalid_credentials
-    );
-  }
+if (!passwordCorrect) {
+  await recordFailedLogin({
+    ip: req.ip,
+    email: normalizedEmail,
+  });
+
+  throw new CustomError(
+    statusCodes?.badRequest,
+    Message?.inValid,
+    errorCodes?.invalid_credentials
+  );
+}
+
+await resetLoginRateLimit({
+  ip: req.ip,
+  email: normalizedEmail,
+});
 
   // 3. Find all active roles of this user
   const userRoles = await userRoleRepository.findOne({
@@ -676,21 +542,35 @@ export const addSubcriptionPlan = async (req, res) => {
 
   return company;
 };
-
 export const getTotalData = async (req) => {
+  const cacheKey = "bms:company:total-data";
+
+  // 1. Check Redis
+  const cachedData = await redisClient.get(cacheKey);
+
+  if (cachedData) {
+    return JSON.parse(cachedData);
+  }
+
+  // 2. Redis miss → PostgreSQL
   const company = await getRepository("Company").find({
     where: { isDeleted: false },
   });
+
   const tenant = await getRepository("Tenant").find({
     where: { isDeleted: false },
   });
+
   const agent = await getRepository("Staff").find({
     where: { isDeleted: false },
   });
+
   const properties = await getRepository("Property").find({
     where: { isDeleted: false },
   });
+
   const subscriptionPlan = await getRepository("Subscription").find();
+
   const activeCompany = await getRepository("Company").find({
     where: { isDeleted: false, status: true },
   });
@@ -704,6 +584,13 @@ export const getTotalData = async (req) => {
     activeCompany.length,
   ];
 
+  // 3. Store result for 5 minutes
+  await redisClient.setEx(
+    cacheKey,
+    5 * 60,
+    JSON.stringify(formattedData)
+  );
+
+  // 4. Return same result
   return formattedData;
 };
-
