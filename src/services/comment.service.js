@@ -1,5 +1,6 @@
 import AppDataSource from "../core/database/data-source.js";
 import CustomError from "../utils/exception.js";
+import redisClient from "../core/database/redis.js";
 
 const commentRepository = AppDataSource.getRepository("Comment");
 
@@ -81,6 +82,14 @@ export const newMessages = async (req, res) => {
     const complaintId = req.params.complaintId;
     const userId = req.params.userId;
 
+    const cacheKey = `bms:comment:unread:${complaintId}:${userId}`;
+
+const cachedCount = await redisClient.get(cacheKey);
+
+if (cachedCount !== null) {
+  return Number(cachedCount);
+}
+
     const unreadCount = await commentRepository
         .createQueryBuilder("comment")
         .where("comment.complaint_id = :complaintId", { complaintId })
@@ -90,5 +99,11 @@ export const newMessages = async (req, res) => {
         )
         .getCount();
 
-    return unreadCount;
+    await redisClient.setEx(
+  cacheKey,
+  30,
+  String(unreadCount)
+);
+
+return unreadCount;
 };
