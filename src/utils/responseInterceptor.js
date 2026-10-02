@@ -1,5 +1,5 @@
-//Temporary debug mode: disable response encryption so Postman shows actual JSON output.
-//Re-enable encryption later by restoring `encryptResponse(...)` calls.
+// Temporary debug mode: disable response encryption so Postman shows actual JSON output.
+// Re-enable encryption later by restoring `encryptResponse(...)` calls.
 
 // const responseInterceptor = (req, res, next) => {
 //   const oldSend = res.json;

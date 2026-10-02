@@ -1,6 +1,8 @@
-import  Project  from "../models/project.model.js";
+import AppDataSource from "../core/database/data-source.js";
 import { errorCodes, Message, statusCodes } from "../core/common/constant.js";
 import CustomError from "../utils/exception.js";
+
+const projectRepository = AppDataSource.getRepository("project");
 
 
 export const createProject = async (req, res) => {
@@ -11,11 +13,12 @@ export const createProject = async (req, res) => {
       companyId
     } = req.body;
 
-    const project = await Project.create({
+    const project = projectRepository.create({
       projectName,
       projectDetails,
       companyId
     });
+    await projectRepository.save(project);
 
     return project
 };
@@ -42,11 +45,10 @@ export const editProject = async (req, res) => {
       projectDetails,
       companyId
     };
-    const updatedProject = await Project.findByIdAndUpdate(
-      projectId,
-      updateData,
-      { new: true, runValidators: true }
-    );
+    const project = await projectRepository.findOne({ where: { id: projectId } });
+    const updatedProject = project
+      ? await projectRepository.save(Object.assign(project, updateData))
+      : null;
 
     if (!updatedProject) {
       return res.status(404).json({
@@ -64,7 +66,7 @@ export const editProject = async (req, res) => {
 export const deleteProject = async (req, res) => {
   const project = req.query.id;
 
-  const projectData = await Project.findById(project);
+  const projectData = await projectRepository.findOne({ where: { id: project } });
   if (!projectData) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -74,7 +76,7 @@ export const deleteProject = async (req, res) => {
   } 
 
   projectData.isDeleted = true;
-  await projectData.save();
+  await projectRepository.save(projectData);
 
   return projectData
 };
@@ -82,10 +84,13 @@ export const deleteProject = async (req, res) => {
 export const getProject = async (req, res) => {
   const companyId = req.query.id;
 
-  const project = await Project.find({
-    companyId,
-    isDeleted: false,
-  }).sort({ createdAt: -1 });
+  const project = await projectRepository.find({
+    where: {
+      companyId,
+      isDeleted: false,
+    },
+    order: { createdAt: "DESC" },
+  });
 
   if (!project) {
     throw new CustomError(

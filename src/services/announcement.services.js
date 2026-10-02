@@ -1,5 +1,7 @@
-import Announcement from "../models/announcement.model.js";
+import AppDataSource from "../core/database/data-source.js";
 import { errorCodes, Message, statusCodes } from "../core/common/constant.js";
+
+const announcementRepository = AppDataSource.getRepository("Announcement");
 
 export const createAnnouncement = async (req, res) => {
   const {
@@ -8,22 +10,22 @@ export const createAnnouncement = async (req, res) => {
     companyId
   } = req.body;
 
-  const newAnnouncement = await Announcement.create({
+  const newAnnouncement = announcementRepository.create({
     topic,
     details,
     companyId
   });
+  await announcementRepository.save(newAnnouncement);
   return newAnnouncement;
 };
 
 export const editAnnouncement = async(req, res, next) => {
   const id = req.query.id;
   const updateData = req.body; 
-  const editAmmouncement = await Announcement.findByIdAndUpdate(
-    id,
-    updateData,
-    { new: true, runValidators: true } 
-  ) 
+  const announcement = await announcementRepository.findOne({ where: { id } });
+  const editAmmouncement = announcement
+    ? await announcementRepository.save(Object.assign(announcement, updateData))
+    : null;
 
   if (!updateData) {
     return new CustomError(
@@ -37,8 +39,10 @@ export const editAnnouncement = async(req, res, next) => {
 
 export const getAllAnnouncement = async (req) => {
   const companyId = req.query.id;
-  const allAnnouncement  = await Announcement.find({companyId:companyId, isDeleted: false})
-  .sort({ createdAt: -1 })
+  const allAnnouncement  = await announcementRepository.find({
+    where: { companyId: companyId, isDeleted: false },
+    order: { createdAt: "DESC" },
+  });
 
   if (!allAnnouncement) {
     throw new CustomError(
@@ -53,7 +57,9 @@ export const getAllAnnouncement = async (req) => {
 
 export const getAnnouncementById = async(req, res, next) => {
   const announcementId = req.query.id;
-  const announcement = await Announcement.find({ _id:announcementId, isDeleted: false })
+  const announcement = await announcementRepository.find({
+    where: { id: announcementId, isDeleted: false },
+  });
   if (!announcement  ) {
     return new CustomError(
       statusCodes?.notFound,
@@ -67,7 +73,7 @@ export const getAnnouncementById = async(req, res, next) => {
 export const deleteAnnounment = async (req, res) => {
   const {id} = req.query;
 
-  const announcement = await Announcement.findById({_id:id});
+  const announcement = await announcementRepository.findOne({ where: { id } });
   if (!announcement) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -77,6 +83,6 @@ export const deleteAnnounment = async (req, res) => {
   }
 
   announcement.isDeleted = true;
-  await announcement.save();
+  await announcementRepository.save(announcement);
   return announcement ;
 };

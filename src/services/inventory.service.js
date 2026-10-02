@@ -1,23 +1,52 @@
-import Inventory from "../models/inventory.model.js";
 import { errorCodes, Message, statusCodes } from "../core/common/constant.js";
 import CustomError from "../utils/exception.js";
-import Vendor from "../models/vendor.model.js";
-import Tenant from "../models/tenant.model.js";
 import dayjs from 'dayjs';
-import mongoose from "mongoose";
-import AccountsPayable from "../models/accountsPayable.model.js";
-import Property from "../models/property.model.js";
-import UnifiedVoucher from "../models/UnifiedVoucher.model.js";
+import AppDataSource from "../core/database/data-source.js";
+import ProductRegistration from "../entities/productRegistration.entity.js";
+import PurchaseDetails from "../entities/purchaseDetails.entity.js";
+import UsageDetails from "../entities/usageDetails.entity.js";
+import UnifiedVoucherEntity from "../entities/unifiedVoucher.entity.js";
+import AccountsPayableEntity from "../entities/accountsPayable.entity.js";
+import VendorEntity from "../entities/vendor.entity.js";
+import PropertyEntity from "../entities/property.entity.js";
+import { Between, In, IsNull, LessThan } from "typeorm";
+import redisClient from "../core/database/redis.js";
+
+const productRepository = AppDataSource.getRepository(ProductRegistration);
+const purchaseRepository = AppDataSource.getRepository(PurchaseDetails);
+const usageRepository = AppDataSource.getRepository(UsageDetails);
+const unifiedVoucherRepository = AppDataSource.getRepository(UnifiedVoucherEntity);
+const accountsPayableRepository = AppDataSource.getRepository(AccountsPayableEntity);
+const vendorRepository = AppDataSource.getRepository(VendorEntity);
+const propertyRepository = AppDataSource.getRepository(PropertyEntity);
 
 
 export const dropDowns = async (req, res) => {
 
   const companyId = req.query.companyId
+  const companyFilter = companyId === undefined ? IsNull() : companyId;
 
-  const productName = await Inventory.ProductRegistration.find({ isDeleted: false, companyId }).select('_id productName ').sort({ createdAt: -1 });
-  const vendorName = await Vendor.find({ isDeleted: false, companyId }).select('_id vendorName').sort({ createdAt: -1 });
+  const productName = await productRepository.find({
+    where: { isDeleted: false, companyId: companyFilter },
+    select: { id: true, productName: true },
+    order: { createdAt: "DESC" },
+  });
+  const vendorName = await vendorRepository.find({
+    where: { isDeleted: false, companyId: companyFilter },
+    select: { id: true, vendorName: true },
+    order: { createdAt: "DESC" },
+  });
   // const residents = await Tenant.find({ isDeleted: false, companyId }).select('_id tenantName phoneno address').sort({ createdAt: -1 }) || [];
-  const residents = await Property.find({ isDeleted: false, companyId }).select('_id propertyname blockId').sort({ createdAt: -1 }).populate('blockId');
+  const residentRecords = await propertyRepository.find({
+    where: { isDeleted: false, companyId: companyFilter },
+    select: { id: true, propertyname: true, blockId: true },
+    relations: { block: true },
+    order: { createdAt: "DESC" },
+  });
+  const residents = residentRecords.map(({ block, ...resident }) => ({
+    ...resident,
+    blockId: block,
+  }));
 
   if (!productName || !vendorName) {
     throw new CustomError(
@@ -44,12 +73,13 @@ export const registerProduct = async (req, res) => {
     );
   }
 
-  const registerProduct = await Inventory.ProductRegistration.create({
+  const registerProduct = productRepository.create({
     companyId,
     productName,
     productModel,
     productDescription
-  })
+  });
+  await productRepository.save(registerProduct);
   if (!registerProduct) {
     throw new CustomError(
       statusCodes?.conflict,
@@ -63,8 +93,12 @@ export const registerProduct = async (req, res) => {
 
 export const getAllProducts = async (req, res) => {
   const companyId = req.query.companyId;
+  const companyFilter = companyId === undefined ? IsNull() : companyId;
 
-  const allProducts = await Inventory.ProductRegistration.find({ isDeleted: false, companyId }).sort({ createdAt: -1 });
+  const allProducts = await productRepository.find({
+    where: { isDeleted: false, companyId: companyFilter },
+    order: { createdAt: "DESC" },
+  });
 
   if (!allProducts) {
     throw new CustomError(
@@ -89,11 +123,12 @@ export const updateProductById = async (req, res) => {
     );
   }
 
-  const updatedProduct = await Inventory.ProductRegistration.findByIdAndUpdate(
-    id,
-    { productName, productModel, productDescription },
-    { new: true }
-  );
+  const product = await productRepository.findOne({ where: { id } });
+  const updatedProduct = product
+    ? await productRepository.save(
+        Object.assign(product, { productName, productModel, productDescription })
+      )
+    : null;
 
   if (!updatedProduct) {
     throw new CustomError(
@@ -109,11 +144,10 @@ export const updateProductById = async (req, res) => {
 export const deleteProductById = async (req, res) => {
   const { id } = req.params;
 
-  const deletedProduct = await Inventory.ProductRegistration.findByIdAndUpdate(
-    id,
-    { isDeleted: true },
-    { new: true }
-  );
+  const product = await productRepository.findOne({ where: { id } });
+  const deletedProduct = product
+    ? await productRepository.save(Object.assign(product, { isDeleted: true }))
+    : null;
 
   if (!deletedProduct) {
     throw new CustomError(
@@ -157,7 +191,7 @@ export const registerPurchaseDetails = async (req, res) => {
       );
     }
 
-    const purchaseDetails = await Inventory.PurchaseDetails.create({
+    const purchaseDetails = purchaseRepository.create({
       companyId,
       productId,
       productName,
@@ -170,6 +204,9 @@ export const registerPurchaseDetails = async (req, res) => {
       billNumber,
       status
     });
+    await purchaseRepository.save(purchaseDetails);
+    purchaseDetails.quantity = Number(purchaseDetails.quantity);
+    purchaseDetails.unitPerPrice = Number(purchaseDetails.unitPerPrice);
 
     if (!purchaseDetails) {
       throw new CustomError(
@@ -201,10 +238,11 @@ export const registerPurchaseDetails = async (req, res) => {
           accountType: 'Vendor',
           accountName: vendorName
       },
-        "amount.total": amount,
-        "amount.balance": amount,
+        amount,
+        outstandingAmount: amount,
+        totalAmountOwed: amount,
         sourceDocument: {
-          referenceId: purchaseDetails._id,
+          referenceId: purchaseDetails.id,
           referenceModel: 'PurchaseDetails'
         },
         tags: ['Purchase', 'Inventory'],
@@ -213,7 +251,8 @@ export const registerPurchaseDetails = async (req, res) => {
         details: `Purchase of ${productName} - Bill No: ${billNumber}`
       };
 
-      const unifiedVoucher = await UnifiedVoucher.create(voucherData);
+      const unifiedVoucher = unifiedVoucherRepository.create(voucherData);
+      await unifiedVoucherRepository.save(unifiedVoucher);
 
       if (!unifiedVoucher) {
         console.warn('Failed to create UnifiedVoucher for purchase');
@@ -238,9 +277,11 @@ export const registerPurchaseDetails = async (req, res) => {
 };
 
 export const getPurchaseDetailsByIdService = async (purchasedId) => {
-  console.log("🔍 Route hit: /getPurchaseDetailById", purchasedId);
+  console.log("Route hit: /getPurchaseDetailById", purchasedId);
   // const purchasedId = req.query.id
-  const purchaseDetail = await Inventory.PurchaseDetails.findOne({ _id: new mongoose.Types.ObjectId(purchasedId), isDeleted: false });
+  const purchaseDetail = await purchaseRepository.findOne({
+    where: { id: purchasedId, isDeleted: false },
+  });
   if (!purchaseDetail) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -248,6 +289,8 @@ export const getPurchaseDetailsByIdService = async (purchasedId) => {
       errorCodes?.not_found
     );
   }
+  purchaseDetail.quantity = Number(purchaseDetail.quantity);
+  purchaseDetail.unitPerPrice = Number(purchaseDetail.unitPerPrice);
   return purchaseDetail;
 };
 
@@ -265,7 +308,7 @@ export const updatePurchaseDetailsById = async (req, res) => {
     );
   }
 
-  const existingPurchase = await Inventory.PurchaseDetails.findById(id);
+  const existingPurchase = await purchaseRepository.findOne({ where: { id } });
   if (!existingPurchase) {
     throw new CustomError(
       statusCodes?.notFound,
@@ -274,9 +317,8 @@ export const updatePurchaseDetailsById = async (req, res) => {
     );
   }
 
-  const updatedPurchaseDetails = await Inventory.PurchaseDetails.findByIdAndUpdate(
-    id,
-    {
+  const updatedPurchaseDetails = await purchaseRepository.save(
+    Object.assign(existingPurchase, {
       productId,
       productName,
       vendorName,
@@ -285,12 +327,13 @@ export const updatePurchaseDetailsById = async (req, res) => {
       quantity,
       unitPerPrice: price,
       bill: newBill || existingPurchase.bill, // Fallback to old bill if new one not uploaded
-    },
-    { new: true }
+    })
   );
+  updatedPurchaseDetails.quantity = Number(updatedPurchaseDetails.quantity);
+  updatedPurchaseDetails.unitPerPrice = Number(updatedPurchaseDetails.unitPerPrice);
 
-  await AccountsPayable.findOneAndUpdate(
-    { purchaseDetailId: updatedPurchaseDetails._id },
+  await accountsPayableRepository.update(
+    { purchaseDetailId: updatedPurchaseDetails.id },
     {
       productName,
       vendorName,
@@ -298,16 +341,20 @@ export const updatePurchaseDetailsById = async (req, res) => {
       quantity,
       unitPerPrice: price,
       bill: newBill || existingPurchase.bill,
-      details: `payable for purchase: ${productName}`,
     }
   );
 
   // Update corresponding UnifiedVoucher if it exists
   try {
-    const existingVoucher = await UnifiedVoucher.findOne({
-      'sourceDocument.referenceId': updatedPurchaseDetails._id,
-      'sourceDocument.referenceModel': 'PurchaseDetails'
-    });
+    const existingVoucher = await unifiedVoucherRepository
+      .createQueryBuilder("voucher")
+      .where('"voucher"."source_document" ->> \'referenceId\' = :referenceId', {
+        referenceId: updatedPurchaseDetails.id,
+      })
+      .andWhere('"voucher"."source_document" ->> \'referenceModel\' = :referenceModel', {
+        referenceModel: 'PurchaseDetails',
+      })
+      .getOne();
 
     if (existingVoucher) {
       const amount = Number(quantity) * Number(price);
@@ -326,24 +373,27 @@ export const updatePurchaseDetailsById = async (req, res) => {
         accountName: vendorName
       };
 
-      // Safely calculate balance to avoid NaN
-      const currentTotal = Number(existingVoucher["amount.total"]) || 0;
-      const currentPaid = Number(existingVoucher["amount.paid"]) || 0;
-      const newBalance = amount - currentPaid;
+      const currentPaid =
+        Number(existingVoucher.totalAmountOwed) -
+        Number(existingVoucher.outstandingAmount);
+      const newOutstandingAmount = Math.max(0, amount - currentPaid);
 
       const voucherUpdateData = {
         voucherNo: voucherNo || existingVoucher.voucherNo,
         particulars,
         debit: debitAccount,
         credit: creditAccount,
-        "amount.total": amount,
-        "amount.balance": isNaN(newBalance) ? amount : newBalance,
+        amount,
+        outstandingAmount: newOutstandingAmount,
+        totalAmountOwed: amount,
         status: 'pending',
         paymentStatus: 'pending',
         details: `Purchase of ${productName} - Bill No: ${updatedPurchaseDetails.billNumber}`
       };
 
-      await UnifiedVoucher.findByIdAndUpdate(existingVoucher._id, voucherUpdateData);
+      await unifiedVoucherRepository.save(
+        Object.assign(existingVoucher, voucherUpdateData)
+      );
     }
   } catch (voucherError) {
     console.error('Error updating UnifiedVoucher for purchase edit:', voucherError);
@@ -356,7 +406,10 @@ export const updatePurchaseDetailsById = async (req, res) => {
 export const deletePurchaseDetailsById = async (req, res) => {
   const { id } = req.params;
 
-  const deletedPurchaseDetails = await Inventory.PurchaseDetails.findByIdAndDelete(id);
+  const deletedPurchaseDetails = await purchaseRepository.findOne({ where: { id } });
+  if (deletedPurchaseDetails) {
+    await purchaseRepository.remove(deletedPurchaseDetails);
+  }
 
   if (!deletedPurchaseDetails) {
     throw new CustomError(
@@ -371,7 +424,15 @@ export const deletePurchaseDetailsById = async (req, res) => {
 
 export const getAllPurchaseDetails = async (req, res) => {
   const companyId = req.query.companyId;
-  const allPurchaseDetails = await Inventory.PurchaseDetails.find({ isDeleted: false, companyId }).sort({ createdAt: -1 });
+  const companyFilter = companyId === undefined ? IsNull() : companyId;
+  const allPurchaseDetails = await purchaseRepository.find({
+    where: { isDeleted: false, companyId: companyFilter },
+    order: { createdAt: "DESC" },
+  });
+  allPurchaseDetails.forEach((purchase) => {
+    purchase.quantity = Number(purchase.quantity);
+    purchase.unitPerPrice = Number(purchase.unitPerPrice);
+  });
 
   if (!allPurchaseDetails) {
     throw new CustomError(
@@ -389,9 +450,20 @@ export const getAllPurchaseDetails = async (req, res) => {
 
 export const allUsagesOfProduct = async (req, res) => {
   const companyId = req.query.companyId;
+  const companyFilter = companyId === undefined ? IsNull() : companyId;
 
-  const allUsages = await Inventory.UsageDetails.find({ isDeleted: false, companyId }).sort({ createdAt: -1 })
-    .populate('residentId');
+  const usageRecords = await usageRepository.find({
+    where: { isDeleted: false, companyId: companyFilter },
+    relations: { resident: true },
+    order: { createdAt: "DESC" },
+  });
+  const allUsages = usageRecords.map(({ resident, ...usage }) => ({
+    ...usage,
+    productQuantity: Number(usage.productQuantity),
+    productPrice:
+      usage.productPrice === null ? null : Number(usage.productPrice),
+    residentId: resident,
+  }));
 
   if (!allUsages) {
     throw new CustomError(
@@ -462,7 +534,12 @@ export const postUsagesOfProduct = async (req, res) => {
     payload.priceDescription = description;
   }
 
-  const productUsage = await Inventory.UsageDetails.create(payload);
+  const productUsage = usageRepository.create(payload);
+  await usageRepository.save(productUsage);
+  productUsage.productQuantity = Number(productUsage.productQuantity);
+  if (productUsage.productPrice !== null && productUsage.productPrice !== undefined) {
+    productUsage.productPrice = Number(productUsage.productPrice);
+  }
 
   console.log(productUsage);
 
@@ -500,7 +577,7 @@ export const postUsagesOfProduct = async (req, res) => {
           accountName: residentName || 'Resident'
         };
         creditAccount = {
-          accountId: productUsage._id,
+          accountId: productUsage.id,
           accountType: 'UsageDetails',
           accountName: productName
         };
@@ -512,7 +589,7 @@ export const postUsagesOfProduct = async (req, res) => {
           accountName: 'General Expense'
         };
         creditAccount = {
-          accountId: productUsage._id,
+          accountId: productUsage.id,
           accountType: 'UsageDetails',
           accountName: productName
         };
@@ -527,10 +604,11 @@ export const postUsagesOfProduct = async (req, res) => {
         particulars,
         debit: debitAccount,
         credit: creditAccount,
-        "amount.total": amount,
-        "amount.balance": amount,
+        amount,
+        outstandingAmount: amount,
+        totalAmountOwed: amount,
         sourceDocument: {
-          referenceId: productUsage._id,
+          referenceId: productUsage.id,
           referenceModel: 'UsageDetails' // Linking to usage details
         },
         tags: ['ProductUsage', usedFor === 'resident' ? 'Resident' : 'General'],
@@ -546,7 +624,8 @@ export const postUsagesOfProduct = async (req, res) => {
       }
 
 
-      const unifiedVoucher = await UnifiedVoucher.create(voucherData);
+      const unifiedVoucher = unifiedVoucherRepository.create(voucherData);
+      await unifiedVoucherRepository.save(unifiedVoucher);
 
 
       if (!unifiedVoucher) {
@@ -572,14 +651,15 @@ export const postUsagesOfProduct = async (req, res) => {
             accountName: 'FOC Expense'
           },
           credit: {
-            accountId: productUsage._id,
+            accountId: productUsage.id,
             accountType: 'UsageDetails',
             accountName: productName
           },
-          "amount.total": price,
-          "amount.balance": price,
+          amount,
+          outstandingAmount: amount,
+          totalAmountOwed: amount,
           sourceDocument: {
-            referenceId: productUsage._id,
+            referenceId: productUsage.id,
             referenceModel: 'UsageDetails'
           },
           tags: ['ProductUsage', 'FOC', usedFor === 'resident' ? 'Resident' : 'General'],
@@ -593,7 +673,8 @@ export const postUsagesOfProduct = async (req, res) => {
           focVoucherData.propertyName = residentName;
         }
 
-        const focVoucher = await UnifiedVoucher.create(focVoucherData);
+        const focVoucher = unifiedVoucherRepository.create(focVoucherData);
+        await unifiedVoucherRepository.save(focVoucher);
 
         if (focVoucher) {
           console.log(`Created FOC tracking voucher for product usage: ${productName}`);
@@ -663,13 +744,7 @@ export const editUsagesOfProduct = async (req, res) => {
     productName,
     productQuantity: quantity,
     usedFor,
-    billingType,
-    generalDescription: undefined,
-    residentId: undefined,
-    residentName: undefined,
-    focDescription: undefined,
-    productPrice: undefined,
-    priceDescription: undefined
+    billingType
   };
 
   if (usedFor === 'general') {
@@ -691,9 +766,16 @@ export const editUsagesOfProduct = async (req, res) => {
     updateData.priceDescription = description;
       }
 
-  const updated = await Inventory.UsageDetails.findByIdAndUpdate(id, updateData, {
-    new: true
-  });
+  const usage = await usageRepository.findOne({ where: { id } });
+  const updated = usage
+    ? await usageRepository.save(Object.assign(usage, updateData))
+    : null;
+  if (updated) {
+    updated.productQuantity = Number(updated.productQuantity);
+    if (updated.productPrice !== null && updated.productPrice !== undefined) {
+      updated.productPrice = Number(updated.productPrice);
+    }
+  }
 
   if (!updated) {
     throw new CustomError(
@@ -705,10 +787,15 @@ export const editUsagesOfProduct = async (req, res) => {
 
   // Update corresponding UnifiedVoucher if it exists
   try {
-    const existingVoucher = await UnifiedVoucher.findOne({
-      'sourceDocument.referenceId': updated._id,
-      'sourceDocument.referenceModel': 'UsageDetails'
-    });
+    const existingVoucher = await unifiedVoucherRepository
+      .createQueryBuilder("voucher")
+      .where('"voucher"."source_document" ->> \'referenceId\' = :referenceId', {
+        referenceId: updated.id,
+      })
+      .andWhere('"voucher"."source_document" ->> \'referenceModel\' = :referenceModel', {
+        referenceModel: 'UsageDetails',
+      })
+      .getOne();
 
     if (existingVoucher) {
       const amount = billingType === 'price' ? (quantity * price) : 0;
@@ -722,12 +809,12 @@ export const editUsagesOfProduct = async (req, res) => {
       let debitAccount, creditAccount;
       if (usedFor === 'resident' && residentName) {
         debitAccount = {
-          accountId: (residentId && residentId.trim() !== '') ? residentId : updated._id,
+          accountId: (residentId && residentId.trim() !== '') ? residentId : updated.id,
           accountType: 'Property',
           accountName: residentName
         };
         creditAccount = {
-          accountId: updated._id,
+          accountId: updated.id,
           accountType: 'UsageDetails',
           accountName: productName
 };
@@ -738,15 +825,15 @@ export const editUsagesOfProduct = async (req, res) => {
           accountName: 'General Expense'
         };
         creditAccount = {
-          accountId: updated._id,
+          accountId: updated.id,
           accountType: 'UsageDetails',
           accountName: productName
         };
       }
 
-      // Safely calculate balance to avoid NaN
-      const currentTotal = Number(existingVoucher["amount.total"]) || 0;
-      const currentPaid = Number(existingVoucher["amount.paid"]) || 0;
+      const currentPaid =
+        Number(existingVoucher.totalAmountOwed ?? existingVoucher.amount) -
+        Number(existingVoucher.outstandingAmount ?? existingVoucher.amount);
       const newBalance = amount - currentPaid;
 
       const voucherUpdateData = {
@@ -754,8 +841,9 @@ export const editUsagesOfProduct = async (req, res) => {
         particulars,
         debit: debitAccount,
         credit: creditAccount,
-        "amount.total": amount,
-        "amount.balance": isNaN(newBalance) ? amount : newBalance,
+        amount,
+        outstandingAmount: isNaN(newBalance) ? amount : newBalance,
+        totalAmountOwed: amount,
         status: billingType === 'foc' ? 'approved' : 'pending',
         paymentStatus: billingType === 'foc' ? 'paid' : 'pending',
         details: description
@@ -768,7 +856,9 @@ export const editUsagesOfProduct = async (req, res) => {
         voucherUpdateData.propertyName = residentName;
       }
 
-      await UnifiedVoucher.findByIdAndUpdate(existingVoucher._id, voucherUpdateData);
+      await unifiedVoucherRepository.save(
+        Object.assign(existingVoucher, voucherUpdateData)
+      );
     }
   } catch (voucherError) {
     console.error('Error updating UnifiedVoucher for product usage edit:', voucherError);
@@ -781,7 +871,7 @@ export const editUsagesOfProduct = async (req, res) => {
 export const deleteUsagesOfProduct = async (req, res) => {
   const { id } = req.params;
 
-  const usage = await Inventory.UsageDetails.findById(id);
+  const usage = await usageRepository.findOne({ where: { id } });
 
   if (!usage || usage.isDeleted) {
     throw new CustomError(
@@ -792,7 +882,11 @@ export const deleteUsagesOfProduct = async (req, res) => {
   }
 
   usage.isDeleted = true;
-  await usage.save();
+  await usageRepository.save(usage);
+  usage.productQuantity = Number(usage.productQuantity);
+  if (usage.productPrice !== null && usage.productPrice !== undefined) {
+    usage.productPrice = Number(usage.productPrice);
+  }
 
   return usage;
 };
@@ -803,172 +897,135 @@ export const allReports = async (req, res) => {
   const companyId = req.query.companyId;
   const skip = (page - 1) * limit;
 
-  try {
-    const result = await Inventory.ProductRegistration.aggregate([
-      {
-        $match: {
-          isDeleted: false,
-          ...(companyId ? { companyId: new mongoose.Types.ObjectId(companyId) } : {})
-        }
-      },
-      {
-        $lookup: {
-          from: 'purchasedetails',
-          localField: '_id',
-          foreignField: 'productId',
-          as: 'purchases',
-          pipeline: [
-            { $match: { isDeleted: false } }
-          ]
-        }
-      },
-      {
-        $lookup: {
-          from: 'usagedetails',
-          localField: '_id',
-          foreignField: 'productId',
-          as: 'usages',
-          pipeline: [
-            { $match: { isDeleted: false } }
-          ]
-        }
-      },
-      {
-        $addFields: {
-          // Purchase calculations
-          totalPurchased: { $sum: "$purchases.quantity" },
-          totalPurchaseValue: {
-            $sum: {
-              $map: {
-                input: "$purchases",
-                as: "p",
-                in: { $multiply: ["$$p.quantity", "$$p.unitPerPrice"] }
-              }
-            }
-          },
-          // Usage calculations
-          totalUsed: { $sum: "$usages.productQuantity" },
-          totalUsageValue: {
-            $sum: {
-              $map: {
-                input: "$usages",
-                as: "u",
-                in: {
-                  $cond: {
-                    if: { $eq: ["$$u.billingType", "price"] },
-                    then: { $multiply: ["$$u.productQuantity", "$$u.productPrice"] },
-                    else: 0
-                  }
-                }
-              }
-            }
-          },
-          // Current stock calculation
-          currentStock: {
-            $subtract: [
-              { $sum: "$purchases.quantity" },
-              { $sum: "$usages.productQuantity" }
-            ]
-          },
-          // Purchase activities with details
-          purchaseActivities: {
-            $map: {
-              input: "$purchases",
-              as: "p",
-              in: {
-                type: "purchase",
-                date: "$$p.createdAt",
-                quantity: "$$p.quantity",
-                unitPrice: "$$p.unitPerPrice",
-                totalValue: { $multiply: ["$$p.quantity", "$$p.unitPerPrice"] },
-                vendor: "$$p.vendorName",
-                billNumber: "$$p.billNumber",
-                unit: "$$p.unit",
-                status: "$$p.status"
-              }
-            }
-          },
-          // Usage activities with details
-          usageActivities: {
-            $map: {
-              input: "$usages",
-              as: "u",
-              in: {
-                type: "usage",
-                date: "$$u.createdAt",
-                quantity: "$$u.productQuantity",
-                usedFor: "$$u.usedFor",
-                residentName: "$$u.residentName",
-                generalDescription: "$$u.generalDescription",
-                billingType: "$$u.billingType",
-                price: "$$u.productPrice",
-                totalValue: {
-                  $cond: {
-                    if: { $eq: ["$$u.billingType", "price"] },
-                    then: { $multiply: ["$$u.productQuantity", "$$u.productPrice"] },
-                    else: 0
-                  }
-                },
-                description: {
-                  $cond: {
-                    if: { $eq: ["$$u.billingType", "foc"] },
-                    then: "$$u.focDescription",
-                    else: "$$u.priceDescription"
-                  }
-                }
-              }
-            }
-          }
-        }
-      },
-      {
-        $addFields: {
-          // Combine all activities and sort by date
-          allActivities: {
-            $sortArray: {
-              input: { $concatArrays: ["$purchaseActivities", "$usageActivities"] },
-              sortBy: { date: -1 }
-            }
-          },
-          // Summary counts
-          totalTransactions: {
-            $add: [
-              { $size: "$purchases" },
-              { $size: "$usages" }
-            ]
-          }
-        }
-      },
-      {
-        $facet: {
-          metadata: [{ $count: "total" }],
-          data: [
-            { $skip: skip },
-            { $limit: limit }
-          ]
-        }
-      },
-      {
-        $unwind: {
-          path: "$metadata",
-          preserveNullAndEmptyArrays: true
-        }
-      },
-      {
-        $project: {
-          total: "$metadata.total",
-          data: 1
-        }
-      }
-    ]);
+  const cacheKey = `bms:inventory:reports:${companyId || "all"}:${page}:${limit}`;
 
-    const response = result[0] || { total: 0, data: [] };
-    return {
-      total: response.total || 0,
-      page,
-      limit,
-      data: response.data
-    };
+const cachedData = await redisClient.get(cacheKey);
+
+if (cachedData) {
+  return JSON.parse(cachedData);
+}
+
+  try {
+    const products = await productRepository.find({
+      where: {
+        isDeleted: false,
+        ...(companyId ? { companyId } : {}),
+      },
+    });
+    const pageProducts = products.slice(skip, skip + limit);
+    const productIds = pageProducts.map(({ id }) => id);
+    const purchases = productIds.length
+      ? await purchaseRepository.find({
+          where: { productId: In(productIds), isDeleted: false },
+        })
+      : [];
+    const usages = productIds.length
+      ? await usageRepository.find({
+          where: { productId: In(productIds), isDeleted: false },
+        })
+      : [];
+
+    const data = pageProducts.map((product) => {
+      const productPurchases = purchases
+        .filter(({ productId }) => productId === product.id)
+        .map((purchase) => ({
+          ...purchase,
+          quantity: Number(purchase.quantity),
+          unitPerPrice: Number(purchase.unitPerPrice),
+        }));
+      const productUsages = usages
+        .filter(({ productId }) => productId === product.id)
+        .map((usage) => ({
+          ...usage,
+          productQuantity: Number(usage.productQuantity),
+          productPrice:
+            usage.productPrice === null ? null : Number(usage.productPrice),
+        }));
+      const totalPurchased = productPurchases.reduce(
+        (sum, purchase) => sum + purchase.quantity,
+        0
+      );
+      const totalPurchaseValue = productPurchases.reduce(
+        (sum, purchase) => sum + purchase.quantity * purchase.unitPerPrice,
+        0
+      );
+      const totalUsed = productUsages.reduce(
+        (sum, usage) => sum + usage.productQuantity,
+        0
+      );
+      const totalUsageValue = productUsages.reduce(
+        (sum, usage) =>
+          sum +
+          (usage.billingType === "price" && usage.productPrice !== null
+            ? usage.productQuantity * usage.productPrice
+            : 0),
+        0
+      );
+      const purchaseActivities = productPurchases.map((purchase) => ({
+        type: "purchase",
+        date: purchase.createdAt,
+        quantity: purchase.quantity,
+        unitPrice: purchase.unitPerPrice,
+        totalValue: purchase.quantity * purchase.unitPerPrice,
+        vendor: purchase.vendorName,
+        billNumber: purchase.billNumber,
+        unit: purchase.unit,
+        status: purchase.status,
+      }));
+      const usageActivities = productUsages.map((usage) => ({
+        type: "usage",
+        date: usage.createdAt,
+        quantity: usage.productQuantity,
+        usedFor: usage.usedFor,
+        residentName: usage.residentName,
+        generalDescription: usage.generalDescription,
+        billingType: usage.billingType,
+        price: usage.productPrice,
+        totalValue:
+          usage.billingType === "price"
+            ? usage.productPrice === null
+              ? null
+              : usage.productQuantity * usage.productPrice
+            : 0,
+        description:
+          usage.billingType === "foc"
+            ? usage.focDescription
+            : usage.priceDescription,
+      }));
+
+      return {
+        ...product,
+        purchases: productPurchases,
+        usages: productUsages,
+        totalPurchased,
+        totalPurchaseValue,
+        totalUsed,
+        totalUsageValue,
+        currentStock: totalPurchased - totalUsed,
+        purchaseActivities,
+        usageActivities,
+        allActivities: [...purchaseActivities, ...usageActivities].sort(
+          (left, right) => new Date(right.date) - new Date(left.date)
+        ),
+        totalTransactions: productPurchases.length + productUsages.length,
+      };
+    });
+
+   const result = {
+  total: products.length,
+  page,
+  limit,
+  data,
+};
+
+await redisClient.setEx(
+  cacheKey,
+  2 * 60,
+  JSON.stringify(result)
+);
+
+return result;
+
   } catch (error) {
     console.error('allReports error:', error);
     throw new CustomError(
@@ -991,36 +1048,58 @@ export const allActivities = async (req, res) => {
     );
   }
 
+  const cacheKey = `bms:inventory:activities:${companyId || "all"}:${productName}:${startDate || "1970-01-01"}:${endDate || "all"}`;
+
   const start = startDate ? new Date(startDate) : new Date('1970-01-01');
   const end = endDate ? new Date(endDate) : new Date();
 
-  const companyFilter = companyId ? { companyId: new mongoose.Types.ObjectId(companyId) } : {};
+  const companyFilter = companyId ? { companyId } : {};
+
+  const cachedData = await redisClient.get(cacheKey);
+
+if (cachedData) {
+  return JSON.parse(cachedData);
+}
 
   // Opening balance filter
   const openingFilter = {
     productName,
-    createdAt: { $lt: start },
     isDeleted: false,
-    ...companyFilter
+    ...companyFilter,
   };
 
-  const pastPurchases = await Inventory.PurchaseDetails.find(openingFilter);
-  const pastUsages = await Inventory.UsageDetails.find(openingFilter);
+  const pastPurchases = await purchaseRepository.find({
+    where: { ...openingFilter, createdAt: LessThan(start) },
+  });
+  const pastUsages = await usageRepository.find({
+    where: { ...openingFilter, createdAt: LessThan(start) },
+  });
 
-  const totalPurchasedBefore = pastPurchases.reduce((sum, p) => sum + p.quantity, 0);
-  const totalUsedBefore = pastUsages.reduce((sum, u) => sum + u.productQuantity, 0);
+  const totalPurchasedBefore = pastPurchases.reduce(
+    (sum, purchase) => sum + Number(purchase.quantity),
+    0
+  );
+  const totalUsedBefore = pastUsages.reduce(
+    (sum, usage) => sum + Number(usage.productQuantity),
+    0
+  );
   let balance = totalPurchasedBefore - totalUsedBefore;
 
   // Activities in range
   const filter = {
     productName,
-    createdAt: { $gte: start, $lte: end },
     isDeleted: false,
-    ...companyFilter
+    ...companyFilter,
   };
 
-  const purchases = await Inventory.PurchaseDetails.find(filter).sort({ createdAt: 1 });
-  const usages = await Inventory.UsageDetails.find(filter).sort({ createdAt: 1 });
+  const purchases = await purchaseRepository.find({
+    where: { ...filter, createdAt: Between(start, end) },
+    order: { createdAt: "ASC" },
+  });
+  const usages = await usageRepository.find({
+    where: { ...filter, createdAt: Between(start, end) },
+    order: { createdAt: "ASC" },
+  });
 
   const activityLog = [];
 
@@ -1028,7 +1107,7 @@ export const allActivities = async (req, res) => {
     activityLog.push({
       date: p.createdAt,
       particulars: p.vendorName,
-      inwards: p.quantity,
+      inwards: Number(p.quantity),
       outwards: 0
     });
   });
@@ -1039,7 +1118,7 @@ export const allActivities = async (req, res) => {
       particulars:
         u.usedFor === 'general' ? u.generalDescription : `Resident (${u.residentName})`,
       inwards: 0,
-      outwards: u.productQuantity
+      outwards: Number(u.productQuantity)
     });
   });
 
@@ -1065,8 +1144,13 @@ export const allActivities = async (req, res) => {
   ];
 
 
-  const result = { productName, report };
+ const result = { productName, report };
 
-  return result;
+await redisClient.setEx(
+  cacheKey,
+  2 * 60,
+  JSON.stringify(result)
+);
 
+return result;
 };

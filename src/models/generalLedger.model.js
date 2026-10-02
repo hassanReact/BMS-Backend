@@ -1,7 +1,7 @@
 import mongoose, { Schema } from "mongoose";
 
 
-const generalLedgerSchema = new Schema(
+const blockSchema = new Schema(
   {
     projectId: {
       type: mongoose.Schema.Types.ObjectId,

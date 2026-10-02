@@ -107,7 +107,7 @@ export const authMiddleware = asyncHandler(async (req, res, next) => {
       userId: user._id,
       roleId: decoded.roleId,
       companyId: decoded.companyId,
-      Status: "active",
+      status: "active",
     })
       .populate("roleId")
       .populate("companyId");

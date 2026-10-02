@@ -12,7 +12,7 @@ import propertyRouter from './src/routes/property.routes.js';
 import inventoryRoutes from './src/routes/inventory.routes.js';
 import bookingRoutes from './src/routes/booking.routes.js';
 import staffRoutes from './src/routes/staff.routes.js';
-import tenantRoutes from'./src/routes/tenant.routes.js';
+import tenantRoutes from './src/routes/tenant.routes.js';
 import userRoutes from './src/routes/user.routes.js';
 import companyRoutes from './src/routes/company.routes.js';
 import ownerRoutes from './src/routes/owner.routes.js';
@@ -39,12 +39,15 @@ import systemRoutes from './src/routes/system.routes.js'
 import { ensureSuperAdminExists } from './src/middlewares/ensureSuperAdmin.middleware.js'
 import generalVoucherRoutes from './src/routes/generalVoucher.routes.js'
 import unifiedVoucherRoutes from './src/routes/UnifiedVoucher.routes.js'
+// import postgresPool from './src/core/database/postgres.js';
+import AppDataSource from './src/core/database/data-source.js';
+import redisClient from './src/core/database/redis.js';
 
 const app = express();
-const PORT = (() => { 
+const PORT = (() => {
     // const env = process.env.ENV;
     // return env === 'development' ? 7200 : 4545;
-    return process.env.PORT; 
+    return process.env.PORT;
 })();
 
 app.use(express.json());
@@ -58,7 +61,7 @@ app.use((req, res, next) => {
 });
 
 // await mongoose.connect('mongodb+srv://rental_property:rental_property%40samyotech2024@cluster0.kv1f8.mongodb.net/rms?retryWrites=true&w=majority&appName=Cluster0')
-console.log('database connected successfully');
+
 connectDB()
     .then(() => {
         logger.info('Database connected successfully');
@@ -66,6 +69,19 @@ connectDB()
     .catch((err) => {
         logger.error(`Database connection failed: ${err.message}`);
     });
+
+try {
+    console.log("Starting TypeORM connection...");
+
+    await AppDataSource.initialize();
+    console.log("TypeORM connected successfully");
+
+    await redisClient.connect();
+    console.log("Redis connected successfully");
+
+} catch (err) {
+    console.error("Startup connection error:", err);
+}
 
 app.use(responseInterceptor);
 

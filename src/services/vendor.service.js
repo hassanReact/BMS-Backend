@@ -1,6 +1,8 @@
-import Vendor from "../models/vendor.model.js";
+import AppDataSource from "../core/database/data-source.js";
 import CustomError from "../utils/exception.js";
 import { getCompanyById } from "./company.services.js";
+
+const vendorRepository = AppDataSource.getRepository("Vendor");
 
 export const registerVendor = async (req, res) => {
     const { vendorName, vendorContact, vendorEmail, BankAccountNo, productDescription } = req.body;
@@ -11,9 +13,11 @@ export const registerVendor = async (req, res) => {
     }
 
      // Check whether this vendor already exists for this company
-    const isVendorAlreadyExist = await Vendor.findOne({
-        companyId: companyId,
-        vendorEmail: vendorEmail
+    const isVendorAlreadyExist = await vendorRepository.findOne({
+        where: {
+            companyId: companyId,
+            vendorEmail: vendorEmail
+        }
     });
 
     if (isVendorAlreadyExist) {
@@ -24,7 +28,7 @@ export const registerVendor = async (req, res) => {
         );
     }
 
-    const registerVendor = await Vendor.create({
+    const registerVendor = vendorRepository.create({
         companyId,
         vendorName,
         vendorContact,
@@ -32,6 +36,7 @@ export const registerVendor = async (req, res) => {
         vendorAccountNo: BankAccountNo,
         description: productDescription || ""
     });
+    await vendorRepository.save(registerVendor);
 
     if (!registerVendor) {
         throw new CustomError(
@@ -49,7 +54,10 @@ export const getAllVendors = async (req, res) => {
     const companyId = req.query.companyId;
 
 
-    const allVendors = await Vendor.find({ isDeleted: false, companyId }).sort({ createdAt: -1 });
+    const allVendors = await vendorRepository.find({
+        where: { isDeleted: false, companyId },
+        order: { createdAt: "DESC" }
+    });
 
     if (!allVendors || allVendors.length === 0) {
         throw new CustomError(
@@ -70,17 +78,16 @@ export const updateVendor = async (req, res) => {
         return res.status(400).json({ message: "All fields are required" });
     }
 
-    const updatedVendor = await Vendor.findByIdAndUpdate(
-        id,
-        {
+    const vendor = await vendorRepository.findOne({ where: { id } });
+    const updatedVendor = vendor
+        ? await vendorRepository.save(Object.assign(vendor, {
             vendorName: vendorName || "",
             vendorContact: vendorContact || "",
             vendorEmail: vendorEmail || "",
             vendorAccountNo: BankAccountNo || "",
             description: productDescription || ""
-        },
-        { new: true }
-    );
+        }))
+        : null;
 
     if (!updatedVendor) {
         throw new CustomError(
@@ -96,11 +103,10 @@ export const updateVendor = async (req, res) => {
 export const deleteVendor = async (req, res) => {
     const { id } = req.params;
 
-    const deletedVendor = await Vendor.findByIdAndUpdate(
-        id,
-        { isDeleted: true },
-        { new: true }
-    );
+    const vendor = await vendorRepository.findOne({ where: { id } });
+    const deletedVendor = vendor
+        ? await vendorRepository.save(Object.assign(vendor, { isDeleted: true }))
+        : null;
 
     if (!deletedVendor) {
         throw new CustomError(

@@ -1,11 +1,13 @@
-import Type from "../models/types.model.js";
+import AppDataSource from "../core/database/data-source.js";
 import { errorCodes, Message, statusCodes } from "../core/common/constant.js";
 import CustomError from "../utils/exception.js";
+
+const typeRepository = AppDataSource.getRepository("Type");
 
 export const createType = async (req, res) => {
   const { name, description, companyId } = req.body;
 
-  const isTypeAlreadyExist = await Type.findOne({ name });
+  const isTypeAlreadyExist = await typeRepository.findOne({ where: { name } });
 
   if (isTypeAlreadyExist) {
     throw new CustomError(
@@ -15,11 +17,12 @@ export const createType = async (req, res) => {
     );
   }
 
-    const newType = await Type.create({
+    const newType = typeRepository.create({
       name,
       description,
       companyId, 
     });
+    await typeRepository.save(newType);
   return newType;
 };
 
@@ -27,7 +30,10 @@ export const createType = async (req, res) => {
 export const getAllTypes = async (req, res) => {
     const companyId = req.query.id;
 
-    const types = await Type.find({ companyId }).sort({ createdAt: -1 });
+    const types = await typeRepository.find({
+      where: { companyId },
+      order: { createdAt: "DESC" }
+    });
 
     if (!types ) {
       throw new CustomError(
@@ -43,11 +49,10 @@ export const getAllTypes = async (req, res) => {
   export const editTypes = async(req, res, next) => {
     const typeId = req.query.id;
     const updateData = req.body; 
-    const updateType = await Type.findByIdAndUpdate(
-      typeId,
-      updateData,
-      { new: true, runValidators: true } 
-    ) 
+    const type = await typeRepository.findOne({ where: { id: typeId } });
+    const updateType = type
+      ? await typeRepository.save(Object.assign(type, updateData))
+      : null;
   
     if (!updateType) {
       return new CustomError(
@@ -62,11 +67,10 @@ export const getAllTypes = async (req, res) => {
   export const deleteTypes = async(req, res, next) => {
     const typeId = req.query.id;
     const updateData = req.body; 
-    const updateType = await Type.findByIdAndDelete(
-      typeId,
-      updateData,
-      { new: true, runValidators: true } 
-    ) 
+    const type = await typeRepository.findOne({ where: { id: typeId } });
+    const updateType = type
+      ? await typeRepository.remove(type)
+      : null;
   
     if (!updateType) {
       return new CustomError(
