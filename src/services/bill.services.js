@@ -9,6 +9,7 @@ import {
 import CustomError from "../utils/exception.js";
 import { sendEmail } from "../core/helpers/mail.js"
 import ExcelJS from 'exceljs';
+import redisClient from "../core/database/redis.js";
 
 const billRepository = AppDataSource.getRepository("Bill");
 const propertyRepository = AppDataSource.getRepository("Property");
@@ -736,6 +737,14 @@ export const getBillSummaryBetweenDates = async (req, res) => {
     );
   }
 
+  const cacheKey = `bms:bill:summary:${companyId}:${startDate}:${endDate}`;
+
+const cachedSummary = await redisClient.get(cacheKey);
+
+if (cachedSummary) {
+  return JSON.parse(cachedSummary);
+}
+
   const start = new Date(startDate);
   const end = new Date(endDate);
 
@@ -802,7 +811,13 @@ export const getBillSummaryBetweenDates = async (req, res) => {
       summary.unpaid = { count: Number(item.count), totalAmount: Number(item.totalAmount) };
     }
   });
-  return summary
+  await redisClient.setEx(
+  cacheKey,
+  2 * 60,
+  JSON.stringify(summary)
+);
+
+return summary;
 };
 
 export const changeBillStatus = async (req) => {
@@ -973,6 +988,14 @@ export const updateBillVoucher = async (req, res) => {
 
 export const getMonthlyBillData = async (req, res) => {
   const { companyId, year } = req.query;
+
+  const cacheKey = `bms:bill:monthly:${companyId || "all"}:${year || "all"}`;
+  const cachedData = await redisClient.get(cacheKey);
+
+if (cachedData) {
+  return JSON.parse(cachedData);
+}
+
   const query = billRepository
     .createQueryBuilder("bill")
     .select("bill.company_id", "companyId")
@@ -1016,12 +1039,27 @@ export const getMonthlyBillData = async (req, res) => {
     bills: row.bills
   }));
 
-  return result;
+  await redisClient.setEx(
+  cacheKey,
+  5 * 60,
+  JSON.stringify(result)
+);
+
+return result;
 
 }
 
 export const getTotalSalesForMonth = async (req) => {
   const { companyId, year } = req?.query;
+
+  const cacheKey = `bms:bill:total-sales-month:${companyId || "all"}:${year || "all"}`;
+
+const cachedData = await redisClient.get(cacheKey);
+
+if (cachedData) {
+  return JSON.parse(cachedData);
+}
+  
   const query = billRepository
     .createQueryBuilder("bill")
     .select("EXTRACT(MONTH FROM bill.updated_at)", "month")
@@ -1065,11 +1103,25 @@ export const getTotalSalesForMonth = async (req) => {
     const monthData = totalAmount.find((data) => Number(data.month) === index + 1);
     return monthData ? Number(monthData.total_sales_amount) : 0;
   });
-  return formattedData;
+  await redisClient.setEx(
+  cacheKey,
+  5 * 60,
+  JSON.stringify(formattedData)
+);
+
+return formattedData;
 };
 
 export const getMonthlyPaidForTenant = async (req) => {
   const { tenantId, year } = req?.query;
+const cacheKey = `bms:bill:monthly-paid-tenant:${tenantId}:${year || "all"}`;
+
+const cachedData = await redisClient.get(cacheKey);
+
+if (cachedData) {
+  return JSON.parse(cachedData);
+}
+
   const query = billRepository
     .createQueryBuilder("bill")
     .select("bill.updated_at", "updatedAt")
@@ -1098,11 +1150,26 @@ export const getMonthlyPaidForTenant = async (req) => {
     paidArray[month] += Number(bill.totalBillAmountAfterGST);
   });
 
-  return paidArray;
+  await redisClient.setEx(
+  cacheKey,
+  5 * 60,
+  JSON.stringify(paidArray)
+);
+
+return paidArray;
 };
 
 export const getTotalSalesForYear = async (req) => {
   const { companyId, year } = req?.query;
+
+  const cacheKey = `bms:bill:total-sales-year:${companyId || "all"}:${year || "all"}`;
+
+const cachedData = await redisClient.get(cacheKey);
+
+if (cachedData) {
+  return JSON.parse(cachedData);
+}
+
   const query = billRepository
     .createQueryBuilder("bill")
     .select("SUM(bill.total_bill_amount_after_gst)", "total_sales_amount")
@@ -1127,12 +1194,27 @@ export const getTotalSalesForYear = async (req) => {
     ? []
     : [{ _id: null, total_sales_amount: Number(totalYearlySalesRow.total_sales_amount) }];
 
-  return totalYearlySales
+  await redisClient.setEx(
+  cacheKey,
+  5 * 60,
+  JSON.stringify(totalYearlySales)
+);
+
+return totalYearlySales;
 
 };
 
 export const totalPendingBills = async (req) => {
   const companyId = req.query.id;
+
+   const cacheKey = `bms:bill:pending:${companyId}`;
+
+const cachedData = await redisClient.get(cacheKey);
+
+if (cachedData) {
+  return JSON.parse(cachedData);
+}
+
   const bill = await billRepository.find({
     where: { companyId, status: false }
   });
@@ -1144,23 +1226,44 @@ export const totalPendingBills = async (req) => {
       errorCodes?.no_data_found
     );
   }
-  return bill;
+  await redisClient.setEx(
+  cacheKey,
+  2 * 60,
+  JSON.stringify(bill)
+);
+
+return bill;
 };
 
 export const totalPaidBills = async (req) => {
-  const companyId = req.query.id;
+ const companyId = req.query.id;
+
+const cacheKey = `bms:bill:paid:${companyId}`;
+
+const cachedData = await redisClient.get(cacheKey);
+
+if (cachedData) {
+  return JSON.parse(cachedData);
+}
+
   const bill = await billRepository.find({
     where: { companyId, status: true }
   });
 
-  if (!bill) {
+  if (bill.length === 0) {
     throw new CustomError(
       statusCodes?.notFound,
       Message?.notFound,
       errorCodes?.no_data_found
     );
   }
-  return bill;
+  await redisClient.setEx(
+  cacheKey,
+  2 * 60,
+  JSON.stringify(bill)
+);
+
+return bill;
 };
 
 export const billVoucher = async (req, res) => {
